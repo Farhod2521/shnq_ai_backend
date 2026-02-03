@@ -1,0 +1,998 @@
+import os
+import re
+import unicodedata
+
+from rest_framework import status
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from .embeddings import cosine_similarity, upsert_clause_embeddings
+from .models import Clause, ClauseEmbedding, NormTable, QuestionAnswer
+from .ollama_client import DEFAULT_CHAT_MODEL, DEFAULT_EMBED_MODEL, embed_text, generate_text
+
+
+EMBEDDING_MODEL = os.getenv("OLLAMA_EMBED_MODEL", DEFAULT_EMBED_MODEL)
+CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", DEFAULT_CHAT_MODEL)
+MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.2"))
+STRICT_MIN_SCORE = float(os.getenv("RAG_STRICT_MIN_SCORE", "0.35"))
+KEYWORD_WEIGHT = float(os.getenv("RAG_KEYWORD_WEIGHT", "0.15"))
+MAX_QUERY_TERMS = int(os.getenv("RAG_MAX_QUERY_TERMS", "8"))
+REWRITE_QUERY = os.getenv("RAG_REWRITE_QUERY", "1") == "1"
+RERANK_ENABLED = os.getenv("RAG_RERANK_ENABLED", "1") == "1"
+RERANK_CANDIDATES = int(os.getenv("RAG_RERANK_CANDIDATES", "12"))
+
+GREETING_PATTERNS = [
+    r"\bsalom\b",
+    r"\bassalomu?\s+alaykum\b",
+    r"\bva\s*alaykum\s+assalom\b",
+    r"\bhello\b",
+    r"\bhi\b",
+    r"\bhayrli\s+kun\b",
+    r"\bhayrli\s+tong\b",
+    r"\bhayrli\s+kech\b",
+]
+
+SHNQ_KEYWORDS = [
+    "shnq",
+    "qurilish",
+    "me'yor",
+    "meyor",
+    "me'yoriy",
+    "norma",
+    "normalar",
+    "standart",
+    "band",
+    "bob",
+    "hujjat",
+    "smeta",
+    "loyiha",
+    "qmq",
+    "snip",
+    "kmk",
+]
+
+OUT_OF_SCOPE_KEYWORDS = [
+    "python",
+    "javascript",
+    "js",
+    "react",
+    "nextjs",
+    "next.js",
+    "fastapi",
+    "django",
+    "sql",
+    "kod",
+    "code",
+    "program",
+    "dastur",
+    "ob-havo",
+    "ob havo",
+    "weather",
+    "sport",
+    "futbol",
+    "music",
+    "kino",
+    "tarjima",
+    "translate",
+]
+
+DOCUMENT_CODE_RE = re.compile(r"\b(?:shnq|qmq|kmk|snip)\s*\d", re.IGNORECASE)
+YEAR_RE = re.compile(r"\b(?:19|20)\d{2}\b")
+
+OBJECT_TYPE_KEYWORDS = [
+    "turar joy",
+    "jamoat",
+    "ombor",
+    "sanoat",
+    "maktab",
+    "bogcha",
+    "kasalxona",
+    "ofis",
+    "binosi",
+    "obyekt",
+    "obekt",
+]
+
+REGION_KEYWORDS = [
+    "shahar",
+    "qishloq",
+    "sanoat zona",
+    "hudud",
+    "seysmik",
+    "iqlim",
+]
+
+PHASE_KEYWORDS = [
+    "loyihalash",
+    "qurish",
+    "qurilish",
+    "ekspluatatsiya",
+    "montaj",
+    "rekonstruksiya",
+]
+
+TECH_PARAM_KEYWORDS = [
+    "masofa",
+    "balandlik",
+    "foiz",
+    "maydon",
+    "eni",
+    "uzunligi",
+    "kenglik",
+    "qalinlik",
+    "diametr",
+    "hajm",
+]
+
+COMPARISON_KEYWORDS = ["qaysi biri", "taqqos", "solishtir", "farqi", "to'g'riroq", "togriroq"]
+EXCEPTION_KEYWORDS = ["istisno", "maxsus holat", "alohida holat", "cheklov"]
+REFERENCE_NEED_HINTS = ["izoh", "tushuntir", "qisqacha"]
+REFERENCE_SPECIFIED_HINTS = ["band", "modda", "rasmiy", "havola", "manba"]
+EXAMPLE_HINTS = ["misol", "amaliy"]
+PURPOSE_HINTS = ["nazorat", "loyiha", "ekspertiza", "tekshiruv", "kelishish", "tasdiq"]
+TABLE_HINTS = ["jadval", "table"]
+DOC_CODE_RE = re.compile(r"\b(shnq|qmq|kmk|snip)\s*([0-9][0-9.\-]*)\b", re.IGNORECASE)
+TABLE_TYPO_RE = re.compile(r"\b(jadval|jadvl|jadvlda|jdval|table)\b", re.IGNORECASE)
+CONTEXT_SENSITIVE_TERMS = ["eshik", "deraza", "zina", "yo'lak", "yolak", "evakuatsiya", "kenglik", "balandlik", "masofa"]
+USE_CASE_KEYWORDS = [
+    "turar joy",
+    "aholi yashash",
+    "jamoat",
+    "yongin",
+    "yong'in",
+    "sanoat",
+    "nogiron",
+    "evakuatsiya",
+    "ombor",
+]
+TABLE_NUMBER_RE = re.compile(
+    r"(?:\bjadval(?:da|ni|ga|dan|ning|lar)?\s*[-.]?\s*(\d+[a-z]?)\b|"
+    r"\b(\d+[a-z]?)\s*[-.]?\s*jadval(?:da|ni|ga|dan|ning|lar)?\b)",
+    re.IGNORECASE,
+)
+TABLE_NUM_ONLY_RE = re.compile(r"\b(\d+[a-z]?)\s*[-.]?\s*(?:jadval|jadvl|jadvlda|jdval)\b", re.IGNORECASE)
+TABLE_CONTEXT_STOP_WORDS = {
+    "jadval",
+    "jadvlda",
+    "jadvl",
+    "jdval",
+    "table",
+    "haqida",
+    "malumot",
+    "ma'lumot",
+    "nima",
+    "deyilgan",
+    "ber",
+    "bering",
+    "korsat",
+    "ko'rsat",
+    "qaysi",
+    "boyicha",
+    "bo'yicha",
+    "shnq",
+    "qmq",
+    "kmk",
+    "snip",
+}
+
+CLARIFICATION_RULES = [
+    ("missing_document", "Qaysi hujjat nazarda tutilmoqda? (masalan: SHNQ 2.08.01-24)"),
+    ("missing_clause", "Aniq qaysi band yoki modda haqida so'rayapsiz?"),
+    ("missing_object_type", "Qaysi obyekt turi uchun?"),
+    ("missing_region", "Qaysi hudud sharoitida?"),
+    ("missing_phase", "Qurilishning qaysi bosqichi nazarda tutilgan?"),
+    ("missing_edition", "Hujjatning qaysi yildagi tahriri kerak?"),
+    ("missing_parameter", "Aniq qaysi parametr haqida?"),
+    ("missing_comparison_target", "Qaysi ikki talabni solishtirmoqchisiz?"),
+    ("missing_exception_state", "Bu maxsus yoki istisno holatmi?"),
+    ("missing_reference_mode", "Faqat izohmi yoki rasmiy band bilanmi?"),
+    ("missing_example_mode", "Amaliy misol bilan tushuntiraymi?"),
+    ("missing_purpose", "Bu ma'lumot qaysi maqsad uchun kerak?"),
+    (
+        "missing_use_case",
+        "Aynan qaysi holat uchun? (masalan: turar joy, jamoat binosi yoki yong'in xavfsizligi)",
+    ),
+]
+
+
+def _normalize_text(text: str) -> str:
+    lowered = unicodedata.normalize("NFKC", (text or "")).strip().lower()
+    lowered = (
+        lowered.replace("ʻ", "'")
+        .replace("ʼ", "'")
+        .replace("‘", "'")
+        .replace("’", "'")
+        .replace("`", "'")
+    )
+    lowered = re.sub(r"\s+", " ", lowered)
+    return lowered
+
+
+def _is_greeting(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    return any(re.search(pattern, normalized) for pattern in GREETING_PATTERNS)
+
+
+def _is_shnq_related(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    return any(keyword in normalized for keyword in SHNQ_KEYWORDS)
+
+
+def _is_clearly_out_of_scope(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    return any(keyword in normalized for keyword in OUT_OF_SCOPE_KEYWORDS)
+
+
+def _build_greeting_response() -> str:
+    return "Assalomu alaykum! :) SHNQ bo'yicha qanday savolingiz bor?"
+
+
+def _build_out_of_scope_response() -> str:
+    return (
+        "Kechirasiz, men faqat SHNQ (qurilish me'yorlari) bo'yicha savollarga javob bera olaman. "
+        "Iltimos, savolingizni SHNQ hujjati, bob yoki bandga bog'lab yozing."
+    )
+
+
+def _contains_any(text: str, keywords) -> bool:
+    return any(keyword in text for keyword in keywords)
+
+
+def _needs_clarification(text: str):
+    normalized = _normalize_text(text)
+    if not normalized:
+        return None
+
+    is_context_sensitive = _contains_any(normalized, CONTEXT_SENSITIVE_TERMS)
+    has_use_case = _contains_any(normalized, USE_CASE_KEYWORDS)
+    if is_context_sensitive and not has_use_case:
+        return CLARIFICATION_RULES[12]
+
+    has_document = bool(DOCUMENT_CODE_RE.search(normalized))
+    has_clause = bool(re.search(r"\b(band|modda|bob)\b", normalized) or re.search(r"\b\d+(?:\.\d+){1,3}\b", normalized))
+    has_object_type = _contains_any(normalized, OBJECT_TYPE_KEYWORDS)
+    has_region = _contains_any(normalized, REGION_KEYWORDS)
+    has_phase = _contains_any(normalized, PHASE_KEYWORDS)
+    has_edition = bool(YEAR_RE.search(normalized)) or "amaldagi" in normalized or "so'nggi tahrir" in normalized
+
+    if not has_document:
+        return CLARIFICATION_RULES[0]
+    if not has_clause:
+        return CLARIFICATION_RULES[1]
+    if not has_object_type:
+        return CLARIFICATION_RULES[2]
+    if not has_region:
+        return CLARIFICATION_RULES[3]
+    if not has_phase:
+        return CLARIFICATION_RULES[4]
+    if not has_edition:
+        return CLARIFICATION_RULES[5]
+
+    # Quyidagilar niyatga bog'liq holatlar bo'lib, kerak bo'lganda so'raladi.
+    needs_parameter = bool(re.search(r"\b(qancha|necha|minimal|maksimal|me'yor|meyor)\b", normalized))
+    has_parameter = bool(re.search(r"\d", normalized)) or _contains_any(normalized, TECH_PARAM_KEYWORDS)
+    if needs_parameter and not has_parameter:
+        return CLARIFICATION_RULES[6]
+
+    asks_comparison = _contains_any(normalized, COMPARISON_KEYWORDS)
+    has_two_targets = normalized.count(" va ") >= 1 or normalized.count(",") >= 1
+    if asks_comparison and not has_two_targets:
+        return CLARIFICATION_RULES[7]
+
+    mentions_exception_topic = "istisno" in normalized or "maxsus" in normalized
+    if mentions_exception_topic and not _contains_any(normalized, EXCEPTION_KEYWORDS):
+        return CLARIFICATION_RULES[8]
+
+    asks_explain_only = _contains_any(normalized, REFERENCE_NEED_HINTS)
+    has_reference_mode = _contains_any(normalized, REFERENCE_SPECIFIED_HINTS)
+    if asks_explain_only and not has_reference_mode:
+        return CLARIFICATION_RULES[9]
+
+    if "tushuntir" in normalized and not _contains_any(normalized, EXAMPLE_HINTS):
+        return CLARIFICATION_RULES[10]
+
+    broad_request = bool(re.search(r"\b(talab|norma|qoidalar|qanday)\b", normalized))
+    if broad_request and not _contains_any(normalized, PURPOSE_HINTS):
+        return CLARIFICATION_RULES[11]
+
+    return None
+
+
+def _is_table_request(text: str) -> bool:
+    normalized = _normalize_text(text)
+    has_doc = _extract_doc_code(normalized) is not None
+    has_table_num = _extract_table_number(normalized) is not None
+    has_table_word = bool(TABLE_TYPO_RE.search(normalized))
+    return (has_doc and has_table_num) or (has_table_num and has_table_word) or _contains_any(normalized, TABLE_HINTS)
+
+
+def _extract_table_number(text: str):
+    normalized = _normalize_text(text)
+    match = TABLE_NUMBER_RE.search(normalized)
+    if not match:
+        match = TABLE_NUM_ONLY_RE.search(normalized)
+    if not match:
+        return None
+    return match.group(1) or match.group(2)
+
+
+def _extract_doc_code(text: str):
+    match = DOC_CODE_RE.search(_normalize_text(text))
+    if not match:
+        return None
+    prefix = match.group(1).upper()
+    number = match.group(2)
+    return f"{prefix} {number}"
+
+
+def _normalize_doc_code(text: str) -> str:
+    return re.sub(r"\s+", "", (text or "")).lower()
+
+
+def _table_candidate_docs(table_number: str):
+    qs = (
+        NormTable.objects.filter(table_number__iexact=table_number)
+        .values_list("document__code", flat=True)
+        .distinct()
+    )
+    return list(qs[:7])
+
+
+def _extract_table_context_terms(message: str, doc_code: str | None, table_number: str | None):
+    normalized = _normalize_text(message)
+    # Uzbek lotinida apostrofli tokenlarni ham ushlaymiz: ko'p, yo'l, bo'lim va h.k.
+    terms = re.findall(r"[^\W\d_]+(?:'[^\W\d_]+)?", normalized, flags=re.UNICODE)
+    cleaned = []
+    doc_terms = set(
+        re.findall(r"[^\W\d_]+(?:'[^\W\d_]+)?", _normalize_text(doc_code or ""), flags=re.UNICODE)
+    )
+    number = (table_number or "").lower()
+    for term in terms:
+        if len(term) < 3:
+            continue
+        if term in TABLE_CONTEXT_STOP_WORDS:
+            continue
+        if term in doc_terms:
+            continue
+        if number and term == number:
+            continue
+        cleaned.append(term)
+    # tartibni saqlagan holda uniq
+    uniq = []
+    seen = set()
+    for term in cleaned:
+        if term in seen:
+            continue
+        seen.add(term)
+        uniq.append(term)
+    return uniq
+
+
+def _table_exact_section_hit(table: NormTable, normalized_message: str) -> bool:
+    section = _normalize_text(table.section_title or "")
+    if len(section) < 8:
+        return False
+    if section in normalized_message:
+        return True
+    # "2-§. Ko'p kvartirali ..." kabi sarlavhalarda prefiksni olib tashlab tekshiramiz.
+    section_core = re.sub(r"^\d+\s*[-.]?\s*(?:§|bob)?\.?\s*", "", section).strip()
+    if len(section_core) >= 8 and section_core in normalized_message:
+        return True
+    return False
+
+
+def _table_context_score(table: NormTable, context_terms):
+    if not context_terms:
+        return 0
+    haystack = _normalize_text(
+        f"{table.document.code} "
+        f"{table.section_title or ''} "
+        f"{table.chapter.title if table.chapter else ''} "
+        f"{table.title or ''} "
+        f"{table.markdown[:2500]} "
+        f"{table.raw_html[:2500]}"
+    )
+    return sum(1 for term in context_terms if term in haystack)
+
+
+def _table_candidate_chapters(candidates):
+    chapters = []
+    seen = set()
+    for item in candidates:
+        chapter = item.section_title or (item.chapter.title if item.chapter else "Noma'lum bob")
+        chapter = chapter.strip() if chapter else "Noma'lum bob"
+        if chapter.lower() in seen:
+            continue
+        seen.add(chapter.lower())
+        chapters.append(chapter)
+        if len(chapters) >= 6:
+            break
+    return chapters
+
+
+def _find_table_for_query(message: str):
+    table_number = _extract_table_number(message)
+    doc_code = _extract_doc_code(message)
+    if not table_number:
+        return None, table_number, doc_code, []
+
+    candidates = NormTable.objects.select_related("document", "chapter").filter(
+        table_number__iexact=table_number
+    )
+    if doc_code:
+        target_code = _normalize_doc_code(doc_code)
+        candidates = [item for item in candidates if target_code in _normalize_doc_code(item.document.code)]
+    else:
+        candidates = list(candidates)
+
+    if not candidates:
+        return None, table_number, doc_code, []
+
+    normalized_message = _normalize_text(message)
+    context_terms = _extract_table_context_terms(message, doc_code, table_number)
+    if context_terms:
+        exact_matches = [
+            item for item in candidates if _table_exact_section_hit(item, normalized_message)
+        ]
+        if exact_matches:
+            # Agar foydalanuvchi bo'limni aniq yozgan bo'lsa, shu bo'limdagi jadvalni qaytaramiz.
+            # Bir bo'lim ichida bir nechta 1-jadval bo'lsa ham, tartib bo'yicha birinchisini tanlaymiz.
+            section_keys = {
+                _normalize_text(item.section_title or item.chapter.title if item.chapter else "")
+                for item in exact_matches
+            }
+            if len(section_keys) == 1:
+                picked = sorted(exact_matches, key=lambda x: x.order)[0]
+                return picked, table_number, doc_code, candidates
+
+        scored = sorted(
+            candidates,
+            key=lambda item: (
+                1 if _table_exact_section_hit(item, normalized_message) else 0,
+                _table_context_score(item, context_terms),
+                item.order,
+            ),
+            reverse=True,
+        )
+        best = scored[0]
+        best_exact = _table_exact_section_hit(best, normalized_message)
+        second_exact = _table_exact_section_hit(scored[1], normalized_message) if len(scored) > 1 else False
+        best_score = _table_context_score(best, context_terms)
+        second_score = _table_context_score(scored[1], context_terms) if len(scored) > 1 else -1
+        if best_exact and not second_exact:
+            return best, table_number, doc_code, candidates
+        if best_score > 0 and best_score > second_score:
+            return best, table_number, doc_code, candidates
+        if len(scored) == 1:
+            return scored[0], table_number, doc_code, candidates
+        return None, table_number, doc_code, scored
+
+    if len(candidates) == 1:
+        return candidates[0], table_number, doc_code, candidates
+
+    return None, table_number, doc_code, candidates
+
+
+def _build_table_answer(table: NormTable):
+    chapter_title = table.chapter.title if table.chapter else "-"
+    title = table.title or f"{table.table_number}-jadval"
+    return (
+        "Javob:\n"
+        f"- [Jadval {table.table_number}]\n"
+        f"- [{table.document.code}]\n"
+        f"- [{title}]\n"
+        f"- [Bob: {chapter_title}]\n"
+        "- [Jadval to'liq HTML ko'rinishida `sources[0].html` ichida qaytarildi]"
+    )
+
+
+def _build_table_qa_answer(message: str, table: NormTable) -> str:
+    system = (
+        "Siz SHNQ jadvali bo'yicha yordamchisiz. Faqat berilgan jadval matniga tayangan holda javob bering. "
+        "Jadvalda aniq topilmasa, shu holatni ochiq ayting va taxmin qilmang."
+    )
+    prompt = (
+        f"Savol: {message}\n\n"
+        f"Hujjat: {table.document.code}\n"
+        f"Bo'lim: {table.section_title or (table.chapter.title if table.chapter else '-')}\n"
+        f"Jadval raqami: {table.table_number}\n"
+        "Jadval (markdown):\n"
+        f"{table.markdown}\n\n"
+        "Javobni qisqa va aniq yozing, kerak bo'lsa qaysi satr/ustundan olganingizni ayting."
+    )
+    try:
+        answer = generate_text(
+            prompt,
+            system=system,
+            model=CHAT_MODEL,
+            options={"temperature": 0.0, "top_p": 0.9},
+        )
+        if answer:
+            return answer
+    except Exception:
+        pass
+    return _build_table_answer(table)
+
+
+def _pick_related_table_from_rag(message: str, top_pairs):
+    if not top_pairs:
+        return None
+    # Jadvalni faqat jadvalga oid aniq so'rovda qaytaramiz.
+    if not _is_table_request(message):
+        return None
+    table_number = _extract_table_number(message)
+    doc_code = _extract_doc_code(message)
+    top_doc = top_pairs[0][1].shnq_code if top_pairs and top_pairs[0][1] else None
+    target_doc = doc_code or top_doc
+
+    qs = NormTable.objects.select_related("document", "chapter")
+    if target_doc:
+        target_norm = _normalize_doc_code(target_doc)
+        qs = [t for t in qs if target_norm in _normalize_doc_code(t.document.code)]
+    else:
+        qs = list(qs)
+    if table_number:
+        qs = [t for t in qs if (t.table_number or "").lower() == table_number.lower()]
+
+    if not qs:
+        return None
+
+    normalized = _normalize_text(message)
+    context_terms = _extract_table_context_terms(message, target_doc, table_number)
+    ranked = sorted(
+        qs,
+        key=lambda t: (
+            1 if _table_exact_section_hit(t, normalized) else 0,
+            _table_context_score(t, context_terms),
+            t.order,
+        ),
+        reverse=True,
+    )
+    best = ranked[0]
+    best_score = _table_context_score(best, context_terms)
+    if table_number:
+        return best
+    if best_score > 0:
+        return best
+    return None
+
+
+def _ensure_embeddings():
+    total = Clause.objects.count()
+    if total == 0:
+        return
+    existing = ClauseEmbedding.objects.filter(embedding_model=EMBEDDING_MODEL).count()
+    if existing >= total:
+        return
+    upsert_clause_embeddings(embedding_model=EMBEDDING_MODEL, force_update=False)
+
+
+def _rewrite_query_if_needed(question: str) -> str:
+    if not REWRITE_QUERY:
+        return question
+    system = (
+        "Siz SHNQ qidiruv yordamchisisiz. Savolni qisqa va aniq qidiruv so'roviga aylantiring. "
+        "Faqat bitta qatorda qaytaring. Yangi fakt qo'shmang."
+    )
+    prompt = (
+        "Quyidagi savolni SHNQ hujjatlari bo'yicha qidiruvga moslab qayta yozing:\n"
+        f"{question}\n\nQidiruv so'rovi:"
+    )
+    try:
+        rewritten = generate_text(
+            prompt,
+            system=system,
+            model=CHAT_MODEL,
+            options={"temperature": 0.0, "top_p": 0.9},
+        )
+        return rewritten or question
+    except Exception:
+        return question
+
+
+def _extract_query_terms(text: str):
+    normalized = _normalize_text(text)
+    # Harflar/raqamlar/apostrof bilan so'zlarni ajratamiz.
+    terms = re.findall(r"[a-z0-9']+", normalized)
+    # Juda qisqa tokenlarni olib tashlaymiz.
+    terms = [t for t in terms if len(t) >= 3]
+    # Stop-so'zlarni kamaytiramiz.
+    stop_words = {
+        "uchun",
+        "bilan",
+        "qanday",
+        "nima",
+        "kerak",
+        "emas",
+        "bolsa",
+        "bormi",
+        "haqida",
+        "boyicha",
+        "qaysi",
+        "qilib",
+        "buni",
+    }
+    filtered = [t for t in terms if t not in stop_words]
+    # Takrorlarni olib tashlab, tartibni saqlaymiz.
+    seen = set()
+    unique_terms = []
+    for term in filtered:
+        if term in seen:
+            continue
+        seen.add(term)
+        unique_terms.append(term)
+        if len(unique_terms) >= MAX_QUERY_TERMS:
+            break
+    return unique_terms
+
+
+def _keyword_score(terms, emb: ClauseEmbedding) -> float:
+    if not terms:
+        return 0.0
+    clause_text = _normalize_text(emb.clause.text)
+    chapter = _normalize_text(emb.chapter_title or "")
+    shnq_code = _normalize_text(emb.shnq_code or "")
+    hits = 0
+    for term in terms:
+        if term in clause_text:
+            hits += 1
+            continue
+        if term in chapter or term in shnq_code:
+            hits += 1
+    return hits / max(len(terms), 1)
+
+
+def _llm_rerank(question: str, candidates):
+    if not RERANK_ENABLED or not candidates:
+        return candidates
+    lines = []
+    for idx, (score, emb, semantic, keyword) in enumerate(candidates, 1):
+        snippet = (emb.clause.text or "")[:240].replace("\n", " ")
+        lines.append(
+            f"{idx}) {emb.shnq_code} | bob: {emb.chapter_title or '-'} | band: {emb.clause_number or '-'} | {snippet}"
+        )
+    system = (
+        "Siz SHNQ bo'yicha relevans reytingchisiz. "
+        "Berilgan savolga eng mos bandlarni tanlang."
+    )
+    prompt = (
+        f"Savol: {question}\n\n"
+        "Quyidagi variantlardan eng mos 5 tasining raqamini tanlang.\n"
+        "Faqat raqamlar ro'yxatini qaytaring, masalan: 3,1,5,2,4\n\n"
+        "Variantlar:\n"
+        + "\n".join(lines)
+        + "\n\nTanlangan raqamlar:"
+    )
+    try:
+        raw = generate_text(
+            prompt,
+            system=system,
+            model=CHAT_MODEL,
+            options={"temperature": 0.0, "top_p": 0.9},
+        )
+    except Exception:
+        return candidates
+
+    if not raw:
+        return candidates
+
+    # Raqamlarni xavfsiz pars qilamiz.
+    picked = []
+    for token in re.findall(r"\d+", raw):
+        i = int(token)
+        if 1 <= i <= len(candidates) and i not in picked:
+            picked.append(i)
+        if len(picked) >= 5:
+            break
+
+    if not picked:
+        return candidates
+
+    # Tanlanganlarni oldinga, qolganlarni o'z tartibida qoldiramiz.
+    picked_set = set(picked)
+    ordered = [candidates[i - 1] for i in picked]
+    ordered.extend(c for idx, c in enumerate(candidates, 1) if idx not in picked_set)
+    return ordered
+
+
+def _build_rag_prompt(question, sources):
+    context_chunks = []
+    for idx, emb in enumerate(sources, 1):
+        clause = emb.clause
+        header = f"Manba {idx}"
+        lines = [
+            header,
+            f"Hujjat: {emb.shnq_code}",
+            f"Bob: {emb.chapter_title or 'Nomalum bob'}",
+            f"Band: {emb.clause_number or '-'}",
+            f"Matn: {clause.text}",
+        ]
+        context_chunks.append("\n".join(lines))
+
+    context = "\n\n".join(context_chunks)
+    system = (
+        "Siz SHNQ AI'siz. Faqat SHNQ/QMQ va qurilish normalari hujjatlariga tayangan holda javob bering. "
+        "Hech qachon normani o'ylab topmang, talqin qilmang, faqat kontekstdagi faktlarni yozing. "
+        "Kontekstda javob bo'lmasa, buni ochiq ayting. "
+        "Javobni o'zbek tilida, aniq va qisqa yozing. "
+        "Javob formati: (1) Band raqami. (2) SHNQ nomi va yili. (3) Norma matni qisqa. (4) Izoh (zarur bo'lsa)."
+    )
+    prompt = f"Savol: {question}\n\nKontekst:\n{context}\n\nJavob:"
+    return system, prompt
+
+
+class ChatAPIView(APIView):
+    authentication_classes = []
+    permission_classes = []
+
+    def post(self, request):
+        message = (request.data.get("message") or "").strip()
+        if not message:
+            return Response({"error": "message is required"}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Guardrails: salomlashuv va mavzudan tashqari savollarni LLM/RAGdan oldin ushlaymiz.
+        if _is_greeting(message):
+            return Response(
+                {
+                    "answer": _build_greeting_response(),
+                    "sources": [],
+                    "meta": {"type": "greeting", "model": CHAT_MODEL},
+                }
+            )
+
+        # Aniq mavzudan tashqari savollarni RAGga yubormaymiz.
+        if _is_clearly_out_of_scope(message) and not _is_shnq_related(message):
+            return Response(
+                {
+                    "answer": _build_out_of_scope_response(),
+                    "sources": [],
+                    "meta": {"type": "out_of_scope", "model": CHAT_MODEL},
+                }
+            )
+
+        if _is_table_request(message):
+            table, table_number, doc_code, candidates = _find_table_for_query(message)
+            if not table_number:
+                return Response(
+                    {
+                        "answer": "Qaysi jadval nazarda tutilmoqda? (masalan: 9-jadval)",
+                        "sources": [],
+                        "meta": {"type": "clarification", "missing_case": "missing_table_number", "model": CHAT_MODEL},
+                    }
+                )
+
+            if not doc_code:
+                docs = _table_candidate_docs(table_number)
+                if len(docs) == 1 and table:
+                    doc_code = docs[0]
+                else:
+                    hint = f" Mavjudlari: {', '.join(docs)}." if docs else ""
+                    return Response(
+                        {
+                            "answer": f"{table_number}-jadval qaysi hujjatda kerak? (masalan: SHNQ 2.07.01-23).{hint}",
+                            "sources": [],
+                            "meta": {
+                                "type": "clarification",
+                                "missing_case": "missing_document_for_table",
+                                "model": CHAT_MODEL,
+                                "candidate_documents": docs,
+                            },
+                        }
+                    )
+
+            if not table and candidates:
+                chapters = _table_candidate_chapters(candidates)
+                chapter_hint = f" Variantlar: {', '.join(chapters)}." if chapters else ""
+                return Response(
+                    {
+                        "answer": f"{table_number}-jadval qaysi bo'lim/bob bo'yicha kerak?{chapter_hint}",
+                        "sources": [],
+                        "meta": {
+                            "type": "clarification",
+                            "missing_case": "missing_table_chapter_context",
+                            "model": CHAT_MODEL,
+                            "candidate_chapters": chapters,
+                        },
+                    }
+                )
+
+            if not table:
+                doc_label = doc_code or "ko'rsatilgan hujjat"
+                return Response(
+                    {
+                        "answer": f"{doc_label} bo'yicha {table_number}-jadval topilmadi.",
+                        "sources": [],
+                        "meta": {"type": "no_match", "model": CHAT_MODEL, "target": "table"},
+                    }
+                )
+
+            answer = _build_table_qa_answer(message, table)
+            sources = [
+                {
+                    "type": "table",
+                    "shnq_code": table.document.code,
+                    "chapter": table.chapter.title if table.chapter else None,
+                    "table_number": table.table_number,
+                    "title": table.title,
+                    "html_anchor": table.html_anchor,
+                    "markdown": table.markdown,
+                    "html": table.raw_html,
+                }
+            ]
+            QuestionAnswer.objects.create(
+                question=message,
+                answer=answer,
+                top_clause_ids=[],
+            )
+            return Response(
+                {
+                    "answer": answer,
+                    "sources": sources,
+                    "table_html": table.raw_html,
+                    "meta": {"type": "table_lookup", "model": CHAT_MODEL},
+                }
+            )
+
+        try:
+            _ensure_embeddings()
+        except Exception as exc:
+            return Response({"error": f"Embedding tayyorlash xatoligi: {exc}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        rewritten_message = _rewrite_query_if_needed(message)
+
+        try:
+            query_vec = embed_text(rewritten_message, model=EMBEDDING_MODEL)
+        except Exception as exc:
+            return Response({"error": f"Embedding xatoligi: {exc}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        embeddings = ClauseEmbedding.objects.select_related(
+            "clause", "clause__document", "clause__chapter"
+        ).filter(embedding_model=EMBEDDING_MODEL)
+
+        query_terms = _extract_query_terms(rewritten_message)
+        scored = []
+        for emb in embeddings:
+            semantic = cosine_similarity(query_vec, emb.vector)
+            keyword = _keyword_score(query_terms, emb)
+            score = semantic + (KEYWORD_WEIGHT * keyword)
+            scored.append((score, emb, semantic, keyword))
+
+        best_score = max((score for score, *_rest in scored), default=0.0)
+        if best_score < STRICT_MIN_SCORE:
+            clarification = _needs_clarification(message)
+            if clarification:
+                code, question = clarification
+                return Response(
+                    {
+                        "answer": question,
+                        "sources": [],
+                        "meta": {
+                            "type": "clarification",
+                            "missing_case": code,
+                            "model": CHAT_MODEL,
+                            "best_score": round(best_score, 4),
+                            "strict_min_score": STRICT_MIN_SCORE,
+                        },
+                    }
+                )
+            return Response(
+                {
+                    "answer": "Mos band topilmadi.",
+                    "sources": [],
+                    "meta": {
+                        "type": "no_match",
+                        "model": CHAT_MODEL,
+                        "best_score": round(best_score, 4),
+                        "strict_min_score": STRICT_MIN_SCORE,
+                        "rewritten": rewritten_message != message,
+                    },
+                }
+            )
+
+        scored.sort(key=lambda x: x[0], reverse=True)
+        filtered = [
+            (score, item, semantic, keyword)
+            for score, item, semantic, keyword in scored
+            if score >= MIN_SCORE
+        ]
+        candidate_pairs = filtered[: max(RERANK_CANDIDATES, 5)]
+        reranked = _llm_rerank(message, candidate_pairs)
+        top_pairs = reranked[:5]
+        top = [item for _, item, *_rest in top_pairs]
+
+        if not top:
+            clarification = _needs_clarification(message)
+            if clarification:
+                code, question = clarification
+                return Response(
+                    {
+                        "answer": question,
+                        "sources": [],
+                        "meta": {"type": "clarification", "missing_case": code, "model": CHAT_MODEL},
+                    }
+                )
+            return Response(
+                {
+                    "answer": "Mos band topilmadi.",
+                    "sources": [],
+                    "meta": {"type": "no_match", "model": CHAT_MODEL},
+                }
+            )
+
+        system, prompt = _build_rag_prompt(message, top)
+        try:
+            answer = generate_text(
+                prompt,
+                system=system,
+                model=CHAT_MODEL,
+                options={"temperature": 0.0, "top_p": 0.9},
+            )
+        except Exception as exc:
+            answer = f"LLM javobida xatolik: {exc}"
+        if not answer:
+            answer = top[0].clause.text
+        sources = []
+        for score, emb, semantic, keyword in top_pairs:
+            clause = emb.clause
+            sources.append(
+                {
+                    "shnq_code": emb.shnq_code,
+                    "chapter": emb.chapter_title,
+                    "clause_number": emb.clause_number,
+                    "html_anchor": clause.html_anchor,
+                    "lex_url": emb.lex_url,
+                    "snippet": clause.text[:280],
+                    "score": round(score, 4),
+                    "semantic_score": round(semantic, 4),
+                    "keyword_score": round(keyword, 4),
+                }
+            )
+
+        related_table = _pick_related_table_from_rag(message, top_pairs)
+        table_html = None
+        if related_table:
+            table_html = related_table.raw_html
+            sources.append(
+                {
+                    "type": "table",
+                    "shnq_code": related_table.document.code,
+                    "chapter": related_table.section_title
+                    or (related_table.chapter.title if related_table.chapter else None),
+                    "table_number": related_table.table_number,
+                    "title": related_table.title,
+                    "html_anchor": related_table.html_anchor,
+                    "markdown": related_table.markdown,
+                    "html": related_table.raw_html,
+                }
+            )
+
+        QuestionAnswer.objects.create(
+            question=message,
+            answer=answer,
+            top_clause_ids=[str(emb.clause_id) for emb in top],
+        )
+
+        return Response(
+            {
+                "answer": answer,
+                "sources": sources,
+                "table_html": table_html,
+                "meta": {
+                    "type": "rag",
+                    "model": CHAT_MODEL,
+                    "min_score": MIN_SCORE,
+                    "strict_min_score": STRICT_MIN_SCORE,
+                    "keyword_weight": KEYWORD_WEIGHT,
+                    "rerank_enabled": RERANK_ENABLED,
+                    "rerank_candidates": RERANK_CANDIDATES,
+                    "rewritten": rewritten_message != message,
+                    "query_used": rewritten_message,
+                },
+            }
+        )
