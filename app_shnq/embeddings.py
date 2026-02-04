@@ -30,7 +30,7 @@ def cosine_similarity(a, b):
 
 def upsert_clause_embeddings(embedding_model=None, force_update=False, limit=None):
     model_name = embedding_model or DEFAULT_EMBED_MODEL
-    qs = Clause.objects.select_related("document", "chapter", "embedding").order_by("id")
+    qs = Clause.objects.select_related("document", "chapter").order_by("id")
     if limit:
         qs = qs[:limit]
 
@@ -39,10 +39,7 @@ def upsert_clause_embeddings(embedding_model=None, force_update=False, limit=Non
     skipped = 0
 
     for clause in qs:
-        try:
-            existing = clause.embedding
-        except ClauseEmbedding.DoesNotExist:
-            existing = None
+        existing = ClauseEmbedding.objects.filter(clause=clause).first()
 
         if existing and not force_update and existing.embedding_model == model_name:
             skipped += 1
@@ -51,37 +48,21 @@ def upsert_clause_embeddings(embedding_model=None, force_update=False, limit=Non
         vector = ollama_embed_text(clause.text, model=model_name)
         token_count = len(clause.text.split())
 
-        if existing:
-            existing.embedding_model = model_name
-            existing.vector = vector
-            existing.token_count = token_count
-            existing.shnq_code = clause.document.code
-            existing.chapter_title = clause.chapter.title if clause.chapter else None
-            existing.clause_number = clause.clause_number
-            existing.lex_url = clause.document.lex_url
-            existing.save(
-                update_fields=[
-                    "embedding_model",
-                    "vector",
-                    "token_count",
-                    "shnq_code",
-                    "chapter_title",
-                    "clause_number",
-                    "lex_url",
-                ]
-            )
-            updated += 1
-        else:
-            ClauseEmbedding.objects.create(
-                clause=clause,
-                embedding_model=model_name,
-                vector=vector,
-                token_count=token_count,
-                shnq_code=clause.document.code,
-                chapter_title=clause.chapter.title if clause.chapter else None,
-                clause_number=clause.clause_number,
-                lex_url=clause.document.lex_url,
-            )
+        _, was_created = ClauseEmbedding.objects.update_or_create(
+            clause=clause,
+            defaults={
+                "embedding_model": model_name,
+                "vector": vector,
+                "token_count": token_count,
+                "shnq_code": clause.document.code,
+                "chapter_title": clause.chapter.title if clause.chapter else None,
+                "clause_number": clause.clause_number,
+                "lex_url": clause.document.lex_url,
+            },
+        )
+        if was_created:
             created += 1
+        else:
+            updated += 1
 
     return {"created": created, "updated": updated, "skipped": skipped}
