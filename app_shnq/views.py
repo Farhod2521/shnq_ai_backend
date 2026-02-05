@@ -21,6 +21,17 @@ REWRITE_QUERY = os.getenv("RAG_REWRITE_QUERY", "0") == "1"
 RERANK_ENABLED = os.getenv("RAG_RERANK_ENABLED", "0") == "1"
 RERANK_CANDIDATES = int(os.getenv("RAG_RERANK_CANDIDATES", "12"))
 EMBED_CACHE_ENABLED = os.getenv("RAG_EMBED_CACHE", "1") == "1"
+RAG_FINAL_MAX_TOKENS = int(os.getenv("RAG_FINAL_MAX_TOKENS", "420"))
+RAG_REWRITE_MAX_TOKENS = int(os.getenv("RAG_REWRITE_MAX_TOKENS", "80"))
+RAG_RERANK_MAX_TOKENS = int(os.getenv("RAG_RERANK_MAX_TOKENS", "40"))
+RAG_TABLE_QA_MAX_TOKENS = int(os.getenv("RAG_TABLE_QA_MAX_TOKENS", "280"))
+RAG_AMBIGUITY_SCORE_GAP = float(os.getenv("RAG_AMBIGUITY_SCORE_GAP", "0.03"))
+RAG_AMBIGUITY_MAX_DOCS = int(os.getenv("RAG_AMBIGUITY_MAX_DOCS", "6"))
+RAG_LOW_CONFIDENCE_FLOOR = float(os.getenv("RAG_LOW_CONFIDENCE_FLOOR", "0.12"))
+RAG_NEAR_STRICT_MARGIN = float(os.getenv("RAG_NEAR_STRICT_MARGIN", "0.03"))
+RAG_DOC_DOMINANCE_MIN_RATIO = float(os.getenv("RAG_DOC_DOMINANCE_MIN_RATIO", "0.8"))
+RAG_STRONG_KEYWORD_MIN = float(os.getenv("RAG_STRONG_KEYWORD_MIN", "0.3"))
+RAG_DOMINANCE_WINDOW = int(os.getenv("RAG_DOMINANCE_WINDOW", "5"))
 
 _EMBED_CACHE_MODEL = None
 _EMBED_CACHE_DATA = None
@@ -119,6 +130,8 @@ TECH_PARAM_KEYWORDS = [
     "masofa",
     "balandlik",
     "foiz",
+    "vaqt",
+    "muddat",
     "maydon",
     "eni",
     "uzunligi",
@@ -274,26 +287,6 @@ def _needs_clarification(text: str):
     has_use_case = _contains_any(normalized, USE_CASE_KEYWORDS)
     if is_context_sensitive and not has_use_case:
         return CLARIFICATION_RULES[12]
-
-    has_document = bool(DOCUMENT_CODE_RE.search(normalized))
-    has_clause = bool(re.search(r"\b(band|modda|bob)\b", normalized) or re.search(r"\b\d+(?:\.\d+){1,3}\b", normalized))
-    has_object_type = _contains_any(normalized, OBJECT_TYPE_KEYWORDS)
-    has_region = _contains_any(normalized, REGION_KEYWORDS)
-    has_phase = _contains_any(normalized, PHASE_KEYWORDS)
-    has_edition = bool(YEAR_RE.search(normalized)) or "amaldagi" in normalized or "so'nggi tahrir" in normalized
-
-    if not has_document:
-        return CLARIFICATION_RULES[0]
-    if not has_clause:
-        return CLARIFICATION_RULES[1]
-    if not has_object_type:
-        return CLARIFICATION_RULES[2]
-    if not has_region:
-        return CLARIFICATION_RULES[3]
-    if not has_phase:
-        return CLARIFICATION_RULES[4]
-    if not has_edition:
-        return CLARIFICATION_RULES[5]
 
     # Quyidagilar niyatga bog'liq holatlar bo'lib, kerak bo'lganda so'raladi.
     needs_parameter = bool(re.search(r"\b(qancha|necha|minimal|maksimal|me'yor|meyor)\b", normalized))
@@ -549,7 +542,7 @@ def _build_table_qa_answer(message: str, table: NormTable) -> str:
             prompt,
             system=system,
             model=CHAT_MODEL,
-            options={"temperature": 0.0, "top_p": 0.9},
+            options={"temperature": 0.0, "top_p": 0.9, "max_tokens": RAG_TABLE_QA_MAX_TOKENS},
         )
         if answer and not _is_unhelpful_table_answer(answer):
             return answer
@@ -657,7 +650,7 @@ def _rewrite_query_if_needed(question: str) -> str:
             prompt,
             system=system,
             model=CHAT_MODEL,
-            options={"temperature": 0.0, "top_p": 0.9},
+            options={"temperature": 0.0, "top_p": 0.9, "max_tokens": RAG_REWRITE_MAX_TOKENS},
         )
         return rewritten or question
     except Exception:
@@ -716,6 +709,75 @@ def _keyword_score(terms, emb: ClauseEmbedding) -> float:
     return hits / max(len(terms), 1)
 
 
+def _candidate_documents_from_scored(scored, best_score):
+    if not scored:
+        return []
+    threshold = max(RAG_LOW_CONFIDENCE_FLOOR, best_score - RAG_AMBIGUITY_SCORE_GAP)
+    docs = []
+    seen = set()
+    for score, emb, _semantic, _keyword in scored:
+        if score < threshold:
+            break
+        code = (emb.shnq_code or "").strip()
+        key = code.lower()
+        if not code or key in seen:
+            continue
+        seen.add(key)
+        docs.append(code)
+        if len(docs) >= RAG_AMBIGUITY_MAX_DOCS:
+            break
+    return docs
+
+
+def _should_ask_document_clarification(scored, best_score):
+    if len(scored) < 2:
+        return False, []
+    docs = _candidate_documents_from_scored(scored, best_score)
+    if len(docs) <= 1:
+        return False, docs
+
+    second_score = scored[1][0]
+    close_scores = (best_score - second_score) <= RAG_AMBIGUITY_SCORE_GAP
+    low_confidence = best_score < STRICT_MIN_SCORE
+    many_variants = len(docs) >= 3 and best_score < (STRICT_MIN_SCORE + 0.05)
+    return close_scores or low_confidence or many_variants, docs
+
+
+def _build_document_clarification_answer(docs):
+    return (
+        "Savolda bir nechta hujjatda mos variant topildi. "
+        f"Aniq javob uchun qaysi hujjat kerakligini tanlang: {', '.join(docs)}."
+    )
+
+
+def _dominant_doc_ratio(scored):
+    if not scored:
+        return 0.0
+    window = scored[: max(1, RAG_DOMINANCE_WINDOW)]
+    counts = {}
+    for _score, emb, _semantic, _keyword in window:
+        code = (emb.shnq_code or "").strip().lower()
+        if not code:
+            continue
+        counts[code] = counts.get(code, 0) + 1
+    if not counts:
+        return 0.0
+    return max(counts.values()) / max(len(window), 1)
+
+
+def _can_answer_with_relaxed_threshold(scored, best_score):
+    if not scored:
+        return False
+    if best_score >= STRICT_MIN_SCORE:
+        return True
+    if best_score < max(MIN_SCORE, STRICT_MIN_SCORE - RAG_NEAR_STRICT_MARGIN):
+        return False
+
+    dominant_ratio = _dominant_doc_ratio(scored)
+    top_keyword_score = scored[0][3]
+    return dominant_ratio >= RAG_DOC_DOMINANCE_MIN_RATIO and top_keyword_score >= RAG_STRONG_KEYWORD_MIN
+
+
 def _llm_rerank(question: str, candidates):
     if not RERANK_ENABLED or not candidates:
         return candidates
@@ -742,7 +804,7 @@ def _llm_rerank(question: str, candidates):
             prompt,
             system=system,
             model=CHAT_MODEL,
-            options={"temperature": 0.0, "top_p": 0.9},
+            options={"temperature": 0.0, "top_p": 0.9, "max_tokens": RAG_RERANK_MAX_TOKENS},
         )
     except Exception:
         return candidates
@@ -957,39 +1019,59 @@ class ChatAPIView(APIView):
             score = semantic + (KEYWORD_WEIGHT * keyword)
             scored.append((score, emb, semantic, keyword))
 
-        best_score = max((score for score, *_rest in scored), default=0.0)
-        if best_score < STRICT_MIN_SCORE:
-            clarification = _needs_clarification(message)
-            if clarification:
-                code, question = clarification
-                return Response(
-                    {
-                        "answer": question,
-                        "sources": [],
-                        "meta": {
-                            "type": "clarification",
-                            "missing_case": code,
-                            "model": CHAT_MODEL,
-                            "best_score": round(best_score, 4),
-                            "strict_min_score": STRICT_MIN_SCORE,
-                        },
-                    }
-                )
+        scored.sort(key=lambda x: x[0], reverse=True)
+        best_score = scored[0][0] if scored else 0.0
+        ask_doc_clarification, doc_candidates = _should_ask_document_clarification(scored, best_score)
+        if ask_doc_clarification:
             return Response(
                 {
-                    "answer": "Mos band topilmadi.",
+                    "answer": _build_document_clarification_answer(doc_candidates),
                     "sources": [],
                     "meta": {
-                        "type": "no_match",
+                        "type": "clarification",
+                        "missing_case": "ambiguous_document",
                         "model": CHAT_MODEL,
                         "best_score": round(best_score, 4),
-                        "strict_min_score": STRICT_MIN_SCORE,
-                        "rewritten": rewritten_message != message,
+                        "candidate_documents": doc_candidates,
                     },
                 }
             )
 
-        scored.sort(key=lambda x: x[0], reverse=True)
+        allow_relaxed = _can_answer_with_relaxed_threshold(scored, best_score)
+        if best_score < STRICT_MIN_SCORE:
+            if allow_relaxed:
+                pass
+            else:
+                clarification = _needs_clarification(message)
+                if clarification:
+                    code, question = clarification
+                    return Response(
+                        {
+                            "answer": question,
+                            "sources": [],
+                            "meta": {
+                                "type": "clarification",
+                                "missing_case": code,
+                                "model": CHAT_MODEL,
+                                "best_score": round(best_score, 4),
+                                "strict_min_score": STRICT_MIN_SCORE,
+                            },
+                        }
+                    )
+                return Response(
+                    {
+                        "answer": "Mos band topilmadi.",
+                        "sources": [],
+                        "meta": {
+                            "type": "no_match",
+                            "model": CHAT_MODEL,
+                            "best_score": round(best_score, 4),
+                            "strict_min_score": STRICT_MIN_SCORE,
+                            "rewritten": rewritten_message != message,
+                        },
+                    }
+                )
+
         filtered = [
             (score, item, semantic, keyword)
             for score, item, semantic, keyword in scored
@@ -1025,7 +1107,7 @@ class ChatAPIView(APIView):
                 prompt,
                 system=system,
                 model=CHAT_MODEL,
-                options={"temperature": 0.0, "top_p": 0.9},
+                options={"temperature": 0.0, "top_p": 0.9, "max_tokens": RAG_FINAL_MAX_TOKENS},
             )
         except Exception as exc:
             answer = f"LLM javobida xatolik: {exc}"
@@ -1083,6 +1165,7 @@ class ChatAPIView(APIView):
                     "model": CHAT_MODEL,
                     "min_score": MIN_SCORE,
                     "strict_min_score": STRICT_MIN_SCORE,
+                    "relaxed_threshold_used": best_score < STRICT_MIN_SCORE and allow_relaxed,
                     "keyword_weight": KEYWORD_WEIGHT,
                     "rerank_enabled": RERANK_ENABLED,
                     "rerank_candidates": RERANK_CANDIDATES,
