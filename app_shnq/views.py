@@ -349,6 +349,18 @@ def _normalize_doc_code(text: str) -> str:
     return re.sub(r"\s+", "", (text or "")).lower()
 
 
+def _filter_embeddings_by_doc_code(embeddings, doc_code: str):
+    target = _normalize_doc_code(doc_code)
+    filtered = []
+    for emb in embeddings:
+        current = _normalize_doc_code(emb.shnq_code or "")
+        if not current:
+            continue
+        if current == target or current.startswith(target):
+            filtered.append(emb)
+    return filtered
+
+
 def _table_candidate_docs(table_number: str):
     qs = (
         NormTable.objects.filter(table_number__iexact=table_number)
@@ -1010,6 +1022,22 @@ class ChatAPIView(APIView):
             return Response({"error": f"Embedding xatoligi: {exc}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         embeddings = _get_embeddings_for_query()
+        requested_doc_code = _extract_doc_code(message)
+        if requested_doc_code:
+            embeddings = _filter_embeddings_by_doc_code(embeddings, requested_doc_code)
+            if not embeddings:
+                return Response(
+                    {
+                        "answer": f"{requested_doc_code} bo'yicha mos band topilmadi.",
+                        "sources": [],
+                        "meta": {
+                            "type": "no_match",
+                            "target": "document",
+                            "model": CHAT_MODEL,
+                            "requested_document": requested_doc_code,
+                        },
+                    }
+                )
 
         query_terms = _extract_query_terms(rewritten_message)
         scored = []
@@ -1021,21 +1049,22 @@ class ChatAPIView(APIView):
 
         scored.sort(key=lambda x: x[0], reverse=True)
         best_score = scored[0][0] if scored else 0.0
-        ask_doc_clarification, doc_candidates = _should_ask_document_clarification(scored, best_score)
-        if ask_doc_clarification:
-            return Response(
-                {
-                    "answer": _build_document_clarification_answer(doc_candidates),
-                    "sources": [],
-                    "meta": {
-                        "type": "clarification",
-                        "missing_case": "ambiguous_document",
-                        "model": CHAT_MODEL,
-                        "best_score": round(best_score, 4),
-                        "candidate_documents": doc_candidates,
-                    },
-                }
-            )
+        if not requested_doc_code:
+            ask_doc_clarification, doc_candidates = _should_ask_document_clarification(scored, best_score)
+            if ask_doc_clarification:
+                return Response(
+                    {
+                        "answer": _build_document_clarification_answer(doc_candidates),
+                        "sources": [],
+                        "meta": {
+                            "type": "clarification",
+                            "missing_case": "ambiguous_document",
+                            "model": CHAT_MODEL,
+                            "best_score": round(best_score, 4),
+                            "candidate_documents": doc_candidates,
+                        },
+                    }
+                )
 
         allow_relaxed = _can_answer_with_relaxed_threshold(scored, best_score)
         if best_score < STRICT_MIN_SCORE:
