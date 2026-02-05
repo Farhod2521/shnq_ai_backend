@@ -6,11 +6,11 @@ import django
 
 
 def main():
-    parser = argparse.ArgumentParser(description="SHNQ matnlarini Ollama embeddingga otkazish.")
+    parser = argparse.ArgumentParser(description="SHNQ matnlarini DeepSeek embeddingga otkazish.")
     parser.add_argument(
         "--model",
         default=None,
-        help="Embedding modeli (default: OLLAMA_EMBED_MODEL yoki bge-m3).",
+        help="Embedding modeli (default: DEEPSEEK_EMBED_MODEL).",
     )
     parser.add_argument(
         "--force",

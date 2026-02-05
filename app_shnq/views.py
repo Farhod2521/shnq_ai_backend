@@ -6,20 +6,24 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .deepseek_client import DEFAULT_CHAT_MODEL, DEFAULT_EMBED_MODEL, embed_text, generate_text
 from .embeddings import cosine_similarity, upsert_clause_embeddings
 from .models import Clause, ClauseEmbedding, NormTable, QuestionAnswer
-from .ollama_client import DEFAULT_CHAT_MODEL, DEFAULT_EMBED_MODEL, embed_text, generate_text
 
 
-EMBEDDING_MODEL = os.getenv("OLLAMA_EMBED_MODEL", DEFAULT_EMBED_MODEL)
-CHAT_MODEL = os.getenv("OLLAMA_CHAT_MODEL", DEFAULT_CHAT_MODEL)
+EMBEDDING_MODEL = os.getenv("DEEPSEEK_EMBED_MODEL", DEFAULT_EMBED_MODEL)
+CHAT_MODEL = os.getenv("DEEPSEEK_CHAT_MODEL", DEFAULT_CHAT_MODEL)
 MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.2"))
 STRICT_MIN_SCORE = float(os.getenv("RAG_STRICT_MIN_SCORE", "0.35"))
 KEYWORD_WEIGHT = float(os.getenv("RAG_KEYWORD_WEIGHT", "0.15"))
 MAX_QUERY_TERMS = int(os.getenv("RAG_MAX_QUERY_TERMS", "8"))
-REWRITE_QUERY = os.getenv("RAG_REWRITE_QUERY", "1") == "1"
-RERANK_ENABLED = os.getenv("RAG_RERANK_ENABLED", "1") == "1"
+REWRITE_QUERY = os.getenv("RAG_REWRITE_QUERY", "0") == "1"
+RERANK_ENABLED = os.getenv("RAG_RERANK_ENABLED", "0") == "1"
 RERANK_CANDIDATES = int(os.getenv("RAG_RERANK_CANDIDATES", "12"))
+EMBED_CACHE_ENABLED = os.getenv("RAG_EMBED_CACHE", "1") == "1"
+
+_EMBED_CACHE_MODEL = None
+_EMBED_CACHE_DATA = None
 
 GREETING_PATTERNS = [
     r"\bsalom\b",
@@ -173,6 +177,23 @@ TABLE_CONTEXT_STOP_WORDS = {
     "qmq",
     "kmk",
     "snip",
+}
+TABLE_QUESTION_HINTS = {
+    "nima",
+    "qanday",
+    "qancha",
+    "necha",
+    "qaysi",
+    "nimaga",
+    "nega",
+    "izoh",
+    "izohla",
+    "tushuntir",
+    "tushuntirib",
+    "hisobla",
+    "ber",
+    "degan",
+    "kerak",
 }
 
 CLARIFICATION_RULES = [
@@ -480,16 +501,33 @@ def _find_table_for_query(message: str):
 
 
 def _build_table_answer(table: NormTable):
-    chapter_title = table.chapter.title if table.chapter else "-"
-    title = table.title or f"{table.table_number}-jadval"
+    chapter_title = table.section_title or (table.chapter.title if table.chapter else "-")
     return (
-        "Javob:\n"
-        f"- [Jadval {table.table_number}]\n"
-        f"- [{table.document.code}]\n"
-        f"- [{title}]\n"
-        f"- [Bob: {chapter_title}]\n"
-        "- [Jadval to'liq HTML ko'rinishida `sources[0].html` ichida qaytarildi]"
+        f"{table.document.code} bo'yicha {table.table_number}-jadval topildi "
+        f"({chapter_title}). Jadval to'liq ko'rinishda pastda keltirildi."
     )
+
+
+def _is_table_direct_lookup_request(message: str) -> bool:
+    normalized = _normalize_text(message)
+    if "?" in (message or ""):
+        return False
+    return not any(hint in normalized for hint in TABLE_QUESTION_HINTS)
+
+
+def _is_unhelpful_table_answer(answer: str) -> bool:
+    normalized = _normalize_text(answer)
+    if not normalized:
+        return True
+    bad_markers = [
+        "javob topilmadi",
+        "topilmadi",
+        "aniq topilmadi",
+        "aniqlanmadi",
+        "malumot topilmadi",
+        "ma'lumot topilmadi",
+    ]
+    return any(marker in normalized for marker in bad_markers)
 
 
 def _build_table_qa_answer(message: str, table: NormTable) -> str:
@@ -513,7 +551,7 @@ def _build_table_qa_answer(message: str, table: NormTable) -> str:
             model=CHAT_MODEL,
             options={"temperature": 0.0, "top_p": 0.9},
         )
-        if answer:
+        if answer and not _is_unhelpful_table_answer(answer):
             return answer
     except Exception:
         pass
@@ -564,6 +602,8 @@ def _pick_related_table_from_rag(message: str, top_pairs):
 
 
 def _ensure_embeddings():
+    global _EMBED_CACHE_MODEL, _EMBED_CACHE_DATA
+
     total = Clause.objects.count()
     if total == 0:
         return
@@ -571,6 +611,34 @@ def _ensure_embeddings():
     if existing >= total:
         return
     upsert_clause_embeddings(embedding_model=EMBEDDING_MODEL, force_update=False)
+    _EMBED_CACHE_MODEL = None
+    _EMBED_CACHE_DATA = None
+
+
+def _prepare_embedding_runtime_fields(embeddings):
+    for emb in embeddings:
+        emb._norm_clause = _normalize_text(emb.clause.text)
+        emb._norm_chapter = _normalize_text(emb.chapter_title or "")
+        emb._norm_code = _normalize_text(emb.shnq_code or "")
+    return embeddings
+
+
+def _get_embeddings_for_query():
+    global _EMBED_CACHE_MODEL, _EMBED_CACHE_DATA
+
+    if EMBED_CACHE_ENABLED and _EMBED_CACHE_MODEL == EMBEDDING_MODEL and _EMBED_CACHE_DATA is not None:
+        return _EMBED_CACHE_DATA
+
+    data = list(
+        ClauseEmbedding.objects.select_related("clause", "clause__document", "clause__chapter").filter(
+            embedding_model=EMBEDDING_MODEL
+        )
+    )
+    data = _prepare_embedding_runtime_fields(data)
+    if EMBED_CACHE_ENABLED:
+        _EMBED_CACHE_MODEL = EMBEDDING_MODEL
+        _EMBED_CACHE_DATA = data
+    return data
 
 
 def _rewrite_query_if_needed(question: str) -> str:
@@ -635,9 +703,9 @@ def _extract_query_terms(text: str):
 def _keyword_score(terms, emb: ClauseEmbedding) -> float:
     if not terms:
         return 0.0
-    clause_text = _normalize_text(emb.clause.text)
-    chapter = _normalize_text(emb.chapter_title or "")
-    shnq_code = _normalize_text(emb.shnq_code or "")
+    clause_text = getattr(emb, "_norm_clause", None) or _normalize_text(emb.clause.text)
+    chapter = getattr(emb, "_norm_chapter", None) or _normalize_text(emb.chapter_title or "")
+    shnq_code = getattr(emb, "_norm_code", None) or _normalize_text(emb.shnq_code or "")
     hits = 0
     for term in terms:
         if term in clause_text:
@@ -720,11 +788,36 @@ def _build_rag_prompt(question, sources):
         "Siz SHNQ AI'siz. Faqat SHNQ/QMQ va qurilish normalari hujjatlariga tayangan holda javob bering. "
         "Hech qachon normani o'ylab topmang, talqin qilmang, faqat kontekstdagi faktlarni yozing. "
         "Kontekstda javob bo'lmasa, buni ochiq ayting. "
-        "Javobni o'zbek tilida, aniq va qisqa yozing. "
-        "Javob formati: (1) Band raqami. (2) SHNQ nomi va yili. (3) Norma matni qisqa. (4) Izoh (zarur bo'lsa)."
+        "Javobni o'zbek tilida yozing. "
+        "Javob formatida raqamli punktlar ((1), (2), (3), (4)) ishlatmang. "
+        "Javobni 2 qismda bering: avval 'Batafsil:' deb mazmunli va to'liq tushuntiring, "
+        "so'ng 'Qisqa qilib aytganda:' deb 1-2 jumlada xulosa bering."
     )
     prompt = f"Savol: {question}\n\nKontekst:\n{context}\n\nJavob:"
     return system, prompt
+
+
+def _cleanup_answer_format(answer: str) -> str:
+    text = (answer or "").strip()
+    if not text:
+        return text
+
+    # LLM eski promptga ko'ra (1)..(4) qaytarsa, 1-2 ni olib tashlab, 3-4 ni kerakli ko'rinishga o'tkazamiz.
+    text = re.sub(r"\(\s*1\s*\)\s*[^.\n:]*[:.]?\s*.*?(?:\n|$)", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\(\s*2\s*\)\s*[^.\n:]*[:.]?\s*.*?(?:\n|$)", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\(\s*3\s*\)\s*[^.\n:]*[:.]?\s*", "Batafsil: ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\(\s*4\s*\)\s*[^.\n:]*[:.]?\s*", "\nQisqa qilib aytganda: ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+
+    if "Batafsil:" not in text:
+        text = f"Batafsil: {text}"
+    if "Qisqa qilib aytganda:" not in text:
+        # Qisqa xulosani model bermagan bo'lsa, mavjud matndan ixcham yakun qo'shamiz.
+        short = text.replace("Batafsil:", "").strip()
+        short = short.split(".")[0].strip()
+        if short:
+            text = f"{text}\nQisqa qilib aytganda: {short}."
+    return text
 
 
 class ChatAPIView(APIView):
@@ -812,7 +905,10 @@ class ChatAPIView(APIView):
                     }
                 )
 
-            answer = _build_table_qa_answer(message, table)
+            if _is_table_direct_lookup_request(message):
+                answer = _build_table_answer(table)
+            else:
+                answer = _build_table_qa_answer(message, table)
             sources = [
                 {
                     "type": "table",
@@ -851,9 +947,7 @@ class ChatAPIView(APIView):
         except Exception as exc:
             return Response({"error": f"Embedding xatoligi: {exc}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        embeddings = ClauseEmbedding.objects.select_related(
-            "clause", "clause__document", "clause__chapter"
-        ).filter(embedding_model=EMBEDDING_MODEL)
+        embeddings = _get_embeddings_for_query()
 
         query_terms = _extract_query_terms(rewritten_message)
         scored = []
@@ -937,6 +1031,7 @@ class ChatAPIView(APIView):
             answer = f"LLM javobida xatolik: {exc}"
         if not answer:
             answer = top[0].clause.text
+        answer = _cleanup_answer_format(answer)
         sources = []
         for score, emb, semantic, keyword in top_pairs:
             clause = emb.clause

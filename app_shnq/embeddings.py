@@ -1,27 +1,5 @@
-import hashlib
-import math
-import re
-
 from .models import Clause, ClauseEmbedding
-from .ollama_client import DEFAULT_EMBED_MODEL, embed_text as ollama_embed_text
-
-
-_TOKEN_RE = re.compile(r"\w+", re.UNICODE)
-
-
-def _tokenize(text):
-    return _TOKEN_RE.findall(text.lower())
-
-
-def embed_text(text, dim=256):
-    vec = [0.0] * dim
-    for token in _tokenize(text):
-        digest = hashlib.md5(token.encode("utf-8")).hexdigest()
-        idx = int(digest, 16) % dim
-        vec[idx] += 1.0
-
-    norm = math.sqrt(sum(v * v for v in vec)) or 1.0
-    return [v / norm for v in vec]
+from .deepseek_client import DEFAULT_EMBED_MODEL, embed_text as deepseek_embed_text
 
 
 def cosine_similarity(a, b):
@@ -45,7 +23,7 @@ def upsert_clause_embeddings(embedding_model=None, force_update=False, limit=Non
             skipped += 1
             continue
 
-        vector = ollama_embed_text(clause.text, model=model_name)
+        vector = deepseek_embed_text(clause.text, model=model_name)
         token_count = len(clause.text.split())
 
         _, was_created = ClauseEmbedding.objects.update_or_create(
