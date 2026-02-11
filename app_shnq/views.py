@@ -9,6 +9,7 @@ from rest_framework.views import APIView
 from .deepseek_client import DEFAULT_CHAT_MODEL, DEFAULT_EMBED_MODEL, embed_text, generate_text
 from .embeddings import cosine_similarity, upsert_clause_embeddings
 from .models import Clause, ClauseEmbedding, NormTable, QuestionAnswer
+from .qdrant_store import count_points as qdrant_count_points, search as qdrant_search
 
 
 EMBEDDING_MODEL = os.getenv("DEEPSEEK_EMBED_MODEL", DEFAULT_EMBED_MODEL)
@@ -32,6 +33,9 @@ RAG_NEAR_STRICT_MARGIN = float(os.getenv("RAG_NEAR_STRICT_MARGIN", "0.03"))
 RAG_DOC_DOMINANCE_MIN_RATIO = float(os.getenv("RAG_DOC_DOMINANCE_MIN_RATIO", "0.8"))
 RAG_STRONG_KEYWORD_MIN = float(os.getenv("RAG_STRONG_KEYWORD_MIN", "0.3"))
 RAG_DOMINANCE_WINDOW = int(os.getenv("RAG_DOMINANCE_WINDOW", "5"))
+USE_QDRANT = os.getenv("RAG_USE_QDRANT", "0") == "1"
+RAG_QDRANT_LIMIT = int(os.getenv("RAG_QDRANT_LIMIT", "60"))
+RAG_QDRANT_DOC_LIMIT = int(os.getenv("RAG_QDRANT_DOC_LIMIT", "200"))
 
 _EMBED_CACHE_MODEL = None
 _EMBED_CACHE_DATA = None
@@ -613,8 +617,16 @@ def _ensure_embeddings():
     if total == 0:
         return
     existing = ClauseEmbedding.objects.filter(embedding_model=EMBEDDING_MODEL).count()
-    if existing >= total:
+
+    needs_upsert = existing < total
+    if USE_QDRANT:
+        qdrant_total = qdrant_count_points()
+        if qdrant_total < existing:
+            needs_upsert = True
+
+    if not needs_upsert:
         return
+
     upsert_clause_embeddings(embedding_model=EMBEDDING_MODEL, force_update=False)
     _EMBED_CACHE_MODEL = None
     _EMBED_CACHE_DATA = None
@@ -644,6 +656,34 @@ def _get_embeddings_for_query():
         _EMBED_CACHE_MODEL = EMBEDDING_MODEL
         _EMBED_CACHE_DATA = data
     return data
+
+
+def _score_with_qdrant(query_vec, query_terms, requested_doc_code=None):
+    if not query_vec:
+        return []
+    limit = RAG_QDRANT_DOC_LIMIT if requested_doc_code else RAG_QDRANT_LIMIT
+    hits = qdrant_search(query_vec, limit=limit, doc_code=requested_doc_code)
+    if not hits:
+        return []
+
+    ids = [str(hit.id) for hit in hits]
+    embeddings = ClauseEmbedding.objects.select_related("clause", "clause__document", "clause__chapter").filter(
+        clause_id__in=ids
+    )
+    emb_map = {str(emb.clause_id): emb for emb in embeddings}
+
+    scored = []
+    for hit in hits:
+        emb = emb_map.get(str(hit.id))
+        if not emb or hit.score is None:
+            continue
+        semantic = float(hit.score)
+        keyword = _keyword_score(query_terms, emb)
+        score = semantic + (KEYWORD_WEIGHT * keyword)
+        scored.append((score, emb, semantic, keyword))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored
 
 
 def _rewrite_query_if_needed(question: str) -> str:
@@ -1021,11 +1061,16 @@ class ChatAPIView(APIView):
         except Exception as exc:
             return Response({"error": f"Embedding xatoligi: {exc}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        embeddings = _get_embeddings_for_query()
         requested_doc_code = _extract_doc_code(message)
-        if requested_doc_code:
-            embeddings = _filter_embeddings_by_doc_code(embeddings, requested_doc_code)
-            if not embeddings:
+        query_terms = _extract_query_terms(rewritten_message)
+
+        if USE_QDRANT:
+            try:
+                scored = _score_with_qdrant(query_vec, query_terms, requested_doc_code=requested_doc_code)
+            except Exception as exc:
+                return Response({"error": f"Qdrant xatoligi: {exc}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+            if requested_doc_code and not scored:
                 return Response(
                     {
                         "answer": f"{requested_doc_code} bo'yicha mos band topilmadi.",
@@ -1038,14 +1083,30 @@ class ChatAPIView(APIView):
                         },
                     }
                 )
+        else:
+            embeddings = _get_embeddings_for_query()
+            if requested_doc_code:
+                embeddings = _filter_embeddings_by_doc_code(embeddings, requested_doc_code)
+                if not embeddings:
+                    return Response(
+                        {
+                            "answer": f"{requested_doc_code} bo'yicha mos band topilmadi.",
+                            "sources": [],
+                            "meta": {
+                                "type": "no_match",
+                                "target": "document",
+                                "model": CHAT_MODEL,
+                                "requested_document": requested_doc_code,
+                            },
+                        }
+                    )
 
-        query_terms = _extract_query_terms(rewritten_message)
-        scored = []
-        for emb in embeddings:
-            semantic = cosine_similarity(query_vec, emb.vector)
-            keyword = _keyword_score(query_terms, emb)
-            score = semantic + (KEYWORD_WEIGHT * keyword)
-            scored.append((score, emb, semantic, keyword))
+            scored = []
+            for emb in embeddings:
+                semantic = cosine_similarity(query_vec, emb.vector)
+                keyword = _keyword_score(query_terms, emb)
+                score = semantic + (KEYWORD_WEIGHT * keyword)
+                scored.append((score, emb, semantic, keyword))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         best_score = scored[0][0] if scored else 0.0
