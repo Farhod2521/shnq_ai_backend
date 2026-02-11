@@ -1,12 +1,23 @@
+import logging
 import os
 import re
+import time
 import unicodedata
 
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .deepseek_client import DEFAULT_CHAT_MODEL, DEFAULT_EMBED_MODEL, embed_text, generate_text
+from .deepseek_client import (
+    DEFAULT_CHAT_MODEL,
+    DEFAULT_EMBED_MODEL,
+    detect_query_language,
+    embed_text,
+    ensure_answer_language,
+    generate_text,
+    translate_query_for_search,
+    translate_html_preserving_tags,
+)
 from .embeddings import cosine_similarity, upsert_clause_embeddings
 from .models import Clause, ClauseEmbedding, NormTable, QuestionAnswer
 from .qdrant_store import count_points as qdrant_count_points, search as qdrant_search
@@ -14,6 +25,7 @@ from .qdrant_store import count_points as qdrant_count_points, search as qdrant_
 
 EMBEDDING_MODEL = os.getenv("DEEPSEEK_EMBED_MODEL", DEFAULT_EMBED_MODEL)
 CHAT_MODEL = os.getenv("DEEPSEEK_CHAT_MODEL", DEFAULT_CHAT_MODEL)
+RAG_FAST_MODE = os.getenv("RAG_FAST_MODE", "1") == "1"
 MIN_SCORE = float(os.getenv("RAG_MIN_SCORE", "0.2"))
 STRICT_MIN_SCORE = float(os.getenv("RAG_STRICT_MIN_SCORE", "0.35"))
 KEYWORD_WEIGHT = float(os.getenv("RAG_KEYWORD_WEIGHT", "0.15"))
@@ -22,10 +34,10 @@ REWRITE_QUERY = os.getenv("RAG_REWRITE_QUERY", "0") == "1"
 RERANK_ENABLED = os.getenv("RAG_RERANK_ENABLED", "0") == "1"
 RERANK_CANDIDATES = int(os.getenv("RAG_RERANK_CANDIDATES", "12"))
 EMBED_CACHE_ENABLED = os.getenv("RAG_EMBED_CACHE", "1") == "1"
-RAG_FINAL_MAX_TOKENS = int(os.getenv("RAG_FINAL_MAX_TOKENS", "420"))
+RAG_FINAL_MAX_TOKENS = int(os.getenv("RAG_FINAL_MAX_TOKENS", "220" if RAG_FAST_MODE else "420"))
 RAG_REWRITE_MAX_TOKENS = int(os.getenv("RAG_REWRITE_MAX_TOKENS", "80"))
 RAG_RERANK_MAX_TOKENS = int(os.getenv("RAG_RERANK_MAX_TOKENS", "40"))
-RAG_TABLE_QA_MAX_TOKENS = int(os.getenv("RAG_TABLE_QA_MAX_TOKENS", "280"))
+RAG_TABLE_QA_MAX_TOKENS = int(os.getenv("RAG_TABLE_QA_MAX_TOKENS", "180" if RAG_FAST_MODE else "280"))
 RAG_AMBIGUITY_SCORE_GAP = float(os.getenv("RAG_AMBIGUITY_SCORE_GAP", "0.03"))
 RAG_AMBIGUITY_MAX_DOCS = int(os.getenv("RAG_AMBIGUITY_MAX_DOCS", "6"))
 RAG_LOW_CONFIDENCE_FLOOR = float(os.getenv("RAG_LOW_CONFIDENCE_FLOOR", "0.12"))
@@ -39,6 +51,7 @@ RAG_QDRANT_DOC_LIMIT = int(os.getenv("RAG_QDRANT_DOC_LIMIT", "200"))
 
 _EMBED_CACHE_MODEL = None
 _EMBED_CACHE_DATA = None
+logger = logging.getLogger(__name__)
 
 GREETING_PATTERNS = [
     r"\bsalom\b",
@@ -883,7 +896,7 @@ def _llm_rerank(question: str, candidates):
     return ordered
 
 
-def _build_rag_prompt(question, sources):
+def _build_rag_prompt(question, sources, response_language="uz"):
     context_chunks = []
     for idx, emb in enumerate(sources, 1):
         clause = emb.clause
@@ -898,11 +911,12 @@ def _build_rag_prompt(question, sources):
         context_chunks.append("\n".join(lines))
 
     context = "\n\n".join(context_chunks)
+    language_label = {"uz": "o'zbek", "en": "ingliz", "ru": "rus", "ko": "koreys"}.get(response_language, "o'zbek")
     system = (
         "Siz SHNQ AI'siz. Faqat SHNQ/QMQ va qurilish normalari hujjatlariga tayangan holda javob bering. "
         "Hech qachon normani o'ylab topmang, talqin qilmang, faqat kontekstdagi faktlarni yozing. "
         "Kontekstda javob bo'lmasa, buni ochiq ayting. "
-        "Javobni o'zbek tilida yozing. "
+        f"Javobni {language_label} tilida yozing. "
         "Javob formatida raqamli punktlar ((1), (2), (3), (4)) ishlatmang. "
         "Javobni 2 qismda bering: avval 'Batafsil:' deb mazmunli va to'liq tushuntiring, "
         "so'ng 'Qisqa qilib aytganda:' deb 1-2 jumlada xulosa bering."
@@ -938,13 +952,112 @@ class ChatAPIView(APIView):
     authentication_classes = []
     permission_classes = []
 
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        language = getattr(request, "_query_language", "uz")
+        timings = getattr(request, "_timings", None)
+        request_start = getattr(request, "_request_start", None)
+        if isinstance(getattr(response, "data", None), dict) and "answer" in response.data:
+            try:
+                t0 = time.perf_counter()
+                response.data["answer"] = ensure_answer_language(response.data["answer"], language)
+                if isinstance(timings, dict):
+                    timings["translate_out"] = round((time.perf_counter() - t0) * 1000, 2)
+            except Exception:
+                pass
+            meta = response.data.get("meta")
+            if isinstance(meta, dict):
+                meta.setdefault("query_language", language)
+                if isinstance(timings, dict):
+                    stage_order = ["detect", "translate_in", "embed", "rag_generate", "translate_out"]
+                    ms = {k: round(float(timings.get(k, 0.0)), 2) for k in stage_order}
+                    active = {k: v for k, v in ms.items() if v > 0}
+                    if active:
+                        slowest_stage = max(active, key=active.get)
+                        meta["timings_ms"] = ms
+                        meta["slowest_stage"] = slowest_stage
+                        meta["slowest_stage_ms"] = active[slowest_stage]
+                    if request_start is not None:
+                        total_ms = round((time.perf_counter() - request_start) * 1000, 2)
+                        meta["total_ms"] = total_ms
+                        logger.info(
+                            "chat_timing total_ms=%s slowest=%s slowest_ms=%s timings=%s",
+                            total_ms,
+                            meta.get("slowest_stage"),
+                            meta.get("slowest_stage_ms"),
+                            ms,
+                        )
+            table_html = response.data.get("table_html")
+            if isinstance(table_html, str) and table_html.strip() and language in {"en", "ru", "ko"}:
+                try:
+                    response.data["table_html"] = translate_html_preserving_tags(
+                        table_html,
+                        target_language=language,
+                        source_language="uz",
+                    )
+                except Exception:
+                    pass
+            sources = response.data.get("sources")
+            if isinstance(sources, list) and language in {"en", "ru", "ko"}:
+                for item in sources:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") != "table":
+                        continue
+                    html_value = item.get("html")
+                    if isinstance(html_value, str) and html_value.strip():
+                        try:
+                            item["html"] = translate_html_preserving_tags(
+                                html_value,
+                                target_language=language,
+                                source_language="uz",
+                            )
+                        except Exception:
+                            pass
+                    md_value = item.get("markdown")
+                    if isinstance(md_value, str) and md_value.strip():
+                        try:
+                            item["markdown"] = ensure_answer_language(md_value, language)
+                        except Exception:
+                            pass
+        return response
+
     def post(self, request):
+        total_start = time.perf_counter()
+        timings = {
+            "detect": 0.0,
+            "translate_in": 0.0,
+            "embed": 0.0,
+            "rag_generate": 0.0,
+            "translate_out": 0.0,
+        }
+        request._timings = timings
+        request._request_start = total_start
+
         message = (request.data.get("message") or "").strip()
         if not message:
             return Response({"error": "message is required"}, status=status.HTTP_400_BAD_REQUEST)
 
+        original_message = message
+        search_message = message
+        message_language = "uz"
+        try:
+            t_detect = time.perf_counter()
+            message_language = detect_query_language(message)
+            timings["detect"] = round((time.perf_counter() - t_detect) * 1000, 2)
+            if message_language in {"en", "ru", "ko"}:
+                t_translate = time.perf_counter()
+                search_message = translate_query_for_search(message, message_language)
+                timings["translate_in"] = round((time.perf_counter() - t_translate) * 1000, 2)
+            else:
+                search_message = message
+        except Exception:
+            search_message = message
+            message_language = "uz"
+        request._query_language = message_language
+
         # Guardrails: salomlashuv va mavzudan tashqari savollarni LLM/RAGdan oldin ushlaymiz.
-        if _is_greeting(message):
+        if _is_greeting(search_message):
             return Response(
                 {
                     "answer": _build_greeting_response(),
@@ -954,7 +1067,7 @@ class ChatAPIView(APIView):
             )
 
         # Aniq mavzudan tashqari savollarni RAGga yubormaymiz.
-        if _is_clearly_out_of_scope(message) and not _is_shnq_related(message):
+        if _is_clearly_out_of_scope(search_message) and not _is_shnq_related(search_message):
             return Response(
                 {
                     "answer": _build_out_of_scope_response(),
@@ -963,8 +1076,8 @@ class ChatAPIView(APIView):
                 }
             )
 
-        if _is_table_request(message):
-            table, table_number, doc_code, candidates = _find_table_for_query(message)
+        if _is_table_request(search_message):
+            table, table_number, doc_code, candidates = _find_table_for_query(search_message)
             if not table_number:
                 return Response(
                     {
@@ -1019,10 +1132,12 @@ class ChatAPIView(APIView):
                     }
                 )
 
-            if _is_table_direct_lookup_request(message):
+            if _is_table_direct_lookup_request(search_message):
                 answer = _build_table_answer(table)
             else:
-                answer = _build_table_qa_answer(message, table)
+                t_rag = time.perf_counter()
+                answer = _build_table_qa_answer(search_message, table)
+                timings["rag_generate"] = round((time.perf_counter() - t_rag) * 1000, 2)
             sources = [
                 {
                     "type": "table",
@@ -1036,7 +1151,7 @@ class ChatAPIView(APIView):
                 }
             ]
             QuestionAnswer.objects.create(
-                question=message,
+                question=original_message,
                 answer=answer,
                 top_clause_ids=[],
             )
@@ -1054,14 +1169,16 @@ class ChatAPIView(APIView):
         except Exception as exc:
             return Response({"error": f"Embedding tayyorlash xatoligi: {exc}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        rewritten_message = _rewrite_query_if_needed(message)
+        rewritten_message = _rewrite_query_if_needed(search_message)
 
         try:
+            t_embed = time.perf_counter()
             query_vec = embed_text(rewritten_message, model=EMBEDDING_MODEL)
+            timings["embed"] = round((time.perf_counter() - t_embed) * 1000, 2)
         except Exception as exc:
             return Response({"error": f"Embedding xatoligi: {exc}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        requested_doc_code = _extract_doc_code(message)
+        requested_doc_code = _extract_doc_code(search_message)
         query_terms = _extract_query_terms(rewritten_message)
 
         if USE_QDRANT:
@@ -1132,7 +1249,7 @@ class ChatAPIView(APIView):
             if allow_relaxed:
                 pass
             else:
-                clarification = _needs_clarification(message)
+                clarification = _needs_clarification(search_message)
                 if clarification:
                     code, question = clarification
                     return Response(
@@ -1157,7 +1274,7 @@ class ChatAPIView(APIView):
                             "model": CHAT_MODEL,
                             "best_score": round(best_score, 4),
                             "strict_min_score": STRICT_MIN_SCORE,
-                            "rewritten": rewritten_message != message,
+                            "rewritten": rewritten_message != search_message,
                         },
                     }
                 )
@@ -1168,12 +1285,12 @@ class ChatAPIView(APIView):
             if score >= MIN_SCORE
         ]
         candidate_pairs = filtered[: max(RERANK_CANDIDATES, 5)]
-        reranked = _llm_rerank(message, candidate_pairs)
+        reranked = _llm_rerank(search_message, candidate_pairs)
         top_pairs = reranked[:5]
         top = [item for _, item, *_rest in top_pairs]
 
         if not top:
-            clarification = _needs_clarification(message)
+            clarification = _needs_clarification(search_message)
             if clarification:
                 code, question = clarification
                 return Response(
@@ -1191,14 +1308,16 @@ class ChatAPIView(APIView):
                 }
             )
 
-        system, prompt = _build_rag_prompt(message, top)
+        system, prompt = _build_rag_prompt(search_message, top, response_language=message_language)
         try:
+            t_rag = time.perf_counter()
             answer = generate_text(
                 prompt,
                 system=system,
                 model=CHAT_MODEL,
                 options={"temperature": 0.0, "top_p": 0.9, "max_tokens": RAG_FINAL_MAX_TOKENS},
             )
+            timings["rag_generate"] = round((time.perf_counter() - t_rag) * 1000, 2)
         except Exception as exc:
             answer = f"LLM javobida xatolik: {exc}"
         if not answer:
@@ -1221,7 +1340,7 @@ class ChatAPIView(APIView):
                 }
             )
 
-        related_table = _pick_related_table_from_rag(message, top_pairs)
+        related_table = _pick_related_table_from_rag(search_message, top_pairs)
         table_html = None
         if related_table:
             table_html = related_table.raw_html
@@ -1240,7 +1359,7 @@ class ChatAPIView(APIView):
             )
 
         QuestionAnswer.objects.create(
-            question=message,
+            question=original_message,
             answer=answer,
             top_clause_ids=[str(emb.clause_id) for emb in top],
         )
@@ -1253,14 +1372,18 @@ class ChatAPIView(APIView):
                 "meta": {
                     "type": "rag",
                     "model": CHAT_MODEL,
+                    "answer_language": message_language,
                     "min_score": MIN_SCORE,
                     "strict_min_score": STRICT_MIN_SCORE,
                     "relaxed_threshold_used": best_score < STRICT_MIN_SCORE and allow_relaxed,
                     "keyword_weight": KEYWORD_WEIGHT,
                     "rerank_enabled": RERANK_ENABLED,
                     "rerank_candidates": RERANK_CANDIDATES,
-                    "rewritten": rewritten_message != message,
+                    "rewritten": rewritten_message != search_message,
                     "query_used": rewritten_message,
+                    "query_original": original_message,
                 },
             }
         )
+
+
