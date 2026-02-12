@@ -1,8 +1,12 @@
+import json
 import logging
 import os
 import re
+import threading
 import time
 import unicodedata
+import uuid
+from datetime import datetime
 
 from rest_framework import status
 from rest_framework.response import Response
@@ -11,6 +15,7 @@ from rest_framework.views import APIView
 from .deepseek_client import (
     DEFAULT_CHAT_MODEL,
     DEFAULT_EMBED_MODEL,
+    TRANSLATE_PROVIDER,
     detect_query_language,
     embed_text,
     ensure_answer_language,
@@ -20,7 +25,11 @@ from .deepseek_client import (
 )
 from .embeddings import cosine_similarity, upsert_clause_embeddings
 from .models import Clause, ClauseEmbedding, NormTable, QuestionAnswer
-from .qdrant_store import count_points as qdrant_count_points, search as qdrant_search
+from .qdrant_store import (
+    count_points as qdrant_count_points,
+    health_check as qdrant_health_check,
+    search as qdrant_search,
+)
 
 
 EMBEDDING_MODEL = os.getenv("DEEPSEEK_EMBED_MODEL", DEFAULT_EMBED_MODEL)
@@ -52,6 +61,14 @@ RAG_QDRANT_DOC_LIMIT = int(os.getenv("RAG_QDRANT_DOC_LIMIT", "200"))
 _EMBED_CACHE_MODEL = None
 _EMBED_CACHE_DATA = None
 logger = logging.getLogger(__name__)
+ANALYSIS_LOG_ENABLED = os.getenv("ANALYSIS_LOG", "1") == "1"
+ANALYSIS_LOG_PATH = os.path.abspath((os.getenv("ANALYSIS_LOG_PATH", "analiz.json") or "analiz.json").strip())
+ANALYSIS_MESSAGE_PREVIEW = int(os.getenv("ANALYSIS_MESSAGE_PREVIEW", "200"))
+ANALYSIS_QDRANT_CHECK = os.getenv("ANALYSIS_QDRANT_CHECK", "1") == "1"
+ANALYSIS_QDRANT_TTL = float(os.getenv("ANALYSIS_QDRANT_TTL", "30"))
+_ANALYSIS_LOCK = threading.Lock()
+_QDRANT_HEALTH_CACHE = None
+_QDRANT_HEALTH_TS = 0.0
 
 GREETING_PATTERNS = [
     r"\bsalom\b",
@@ -289,6 +306,93 @@ def _build_out_of_scope_response() -> str:
         "Kechirasiz, men faqat SHNQ (qurilish me'yorlari) bo'yicha savollarga javob bera olaman. "
         "Iltimos, savolingizni SHNQ hujjati, bob yoki bandga bog'lab yozing."
     )
+
+
+def _analysis_now_iso() -> str:
+    return datetime.utcnow().isoformat() + "Z"
+
+
+def _analysis_trim_message(message: str | None) -> str | None:
+    if not message:
+        return None
+    return message[:ANALYSIS_MESSAGE_PREVIEW]
+
+
+def _get_qdrant_status():
+    status = {"enabled": USE_QDRANT, "used": False, "checked": False}
+    if not ANALYSIS_QDRANT_CHECK:
+        return status
+
+    global _QDRANT_HEALTH_CACHE, _QDRANT_HEALTH_TS
+    now = time.time()
+    if _QDRANT_HEALTH_CACHE is not None and (now - _QDRANT_HEALTH_TS) < ANALYSIS_QDRANT_TTL:
+        cached = dict(_QDRANT_HEALTH_CACHE)
+        cached["enabled"] = USE_QDRANT
+        cached["checked"] = True
+        cached["cached"] = True
+        cached.setdefault("used", False)
+        return cached
+
+    raw = qdrant_health_check()
+    if not isinstance(raw, dict):
+        raw = {"ok": False, "error": "health_check_failed"}
+    raw["enabled"] = USE_QDRANT
+    raw["checked"] = True
+    raw["cached"] = False
+    raw.setdefault("used", False)
+    _QDRANT_HEALTH_CACHE = dict(raw)
+    _QDRANT_HEALTH_TS = now
+    return raw
+
+
+def _build_analysis_record(request, response):
+    timings = getattr(request, "_timings", None) or {}
+    request_start = getattr(request, "_request_start", None)
+    total_ms = None
+    if request_start is not None:
+        total_ms = round((time.perf_counter() - request_start) * 1000, 2)
+
+    record = {
+        "ts": _analysis_now_iso(),
+        "request_id": getattr(request, "_analysis_id", None),
+        "path": getattr(request, "path", None),
+        "method": getattr(request, "method", None),
+        "status_code": getattr(response, "status_code", None),
+        "message_len": getattr(request, "_analysis_message_len", None),
+        "message_preview": getattr(request, "_analysis_message_preview", None),
+        "query_language": getattr(request, "_query_language", None),
+        "embedding_model": EMBEDDING_MODEL,
+        "chat_model": CHAT_MODEL,
+        "translate_provider": TRANSLATE_PROVIDER,
+        "use_qdrant": USE_QDRANT,
+        "qdrant_status": getattr(request, "_qdrant_status", None),
+        "timings_ms": timings,
+        "total_ms": total_ms,
+    }
+
+    data = getattr(response, "data", None)
+    if isinstance(data, dict):
+        meta = data.get("meta")
+        if isinstance(meta, dict):
+            record["meta_type"] = meta.get("type")
+            record["slowest_stage"] = meta.get("slowest_stage")
+            record["slowest_stage_ms"] = meta.get("slowest_stage_ms")
+        answer = data.get("answer")
+        if isinstance(answer, str):
+            record["answer_len"] = len(answer)
+    return record
+
+
+def _write_analysis_record(record):
+    if not ANALYSIS_LOG_ENABLED:
+        return
+    try:
+        payload = json.dumps(record, ensure_ascii=True, default=str)
+        with _ANALYSIS_LOCK:
+            with open(ANALYSIS_LOG_PATH, "a", encoding="utf-8") as handle:
+                handle.write(payload + "\n")
+    except Exception as exc:
+        logger.warning("analysis_log_failed: %s", exc)
 
 
 def _contains_any(text: str, keywords) -> bool:
@@ -671,20 +775,27 @@ def _get_embeddings_for_query():
     return data
 
 
-def _score_with_qdrant(query_vec, query_terms, requested_doc_code=None):
+def _score_with_qdrant(query_vec, query_terms, requested_doc_code=None, timings=None):
     if not query_vec:
         return []
     limit = RAG_QDRANT_DOC_LIMIT if requested_doc_code else RAG_QDRANT_LIMIT
+    t_search = time.perf_counter()
     hits = qdrant_search(query_vec, limit=limit, doc_code=requested_doc_code)
+    if isinstance(timings, dict):
+        timings["qdrant_search"] = round((time.perf_counter() - t_search) * 1000, 2)
     if not hits:
         return []
 
     ids = [str(hit.id) for hit in hits]
+    t_db = time.perf_counter()
     embeddings = ClauseEmbedding.objects.select_related("clause", "clause__document", "clause__chapter").filter(
         clause_id__in=ids
     )
+    if isinstance(timings, dict):
+        timings["qdrant_db_fetch"] = round((time.perf_counter() - t_db) * 1000, 2)
     emb_map = {str(emb.clause_id): emb for emb in embeddings}
 
+    t_score = time.perf_counter()
     scored = []
     for hit in hits:
         emb = emb_map.get(str(hit.id))
@@ -694,6 +805,8 @@ def _score_with_qdrant(query_vec, query_terms, requested_doc_code=None):
         keyword = _keyword_score(query_terms, emb)
         score = semantic + (KEYWORD_WEIGHT * keyword)
         scored.append((score, emb, semantic, keyword))
+    if isinstance(timings, dict):
+        timings["qdrant_score"] = round((time.perf_counter() - t_score) * 1000, 2)
 
     scored.sort(key=lambda x: x[0], reverse=True)
     return scored
@@ -968,6 +1081,10 @@ class ChatAPIView(APIView):
             meta = response.data.get("meta")
             if isinstance(meta, dict):
                 meta.setdefault("query_language", language)
+                meta.setdefault("translate_provider", TRANSLATE_PROVIDER)
+                qdrant_status = getattr(request, "_qdrant_status", None)
+                if isinstance(qdrant_status, dict):
+                    meta.setdefault("qdrant_status", qdrant_status)
                 if isinstance(timings, dict):
                     stage_order = ["detect", "translate_in", "embed", "rag_generate", "translate_out"]
                     ms = {k: round(float(timings.get(k, 0.0)), 2) for k in stage_order}
@@ -1020,6 +1137,10 @@ class ChatAPIView(APIView):
                             item["markdown"] = ensure_answer_language(md_value, language)
                         except Exception:
                             pass
+        try:
+            _write_analysis_record(_build_analysis_record(request, response))
+        except Exception:
+            pass
         return response
 
     def post(self, request):
@@ -1027,18 +1148,30 @@ class ChatAPIView(APIView):
         timings = {
             "detect": 0.0,
             "translate_in": 0.0,
+            "rewrite_query": 0.0,
+            "ensure_embeddings": 0.0,
             "embed": 0.0,
+            "qdrant_search": 0.0,
+            "qdrant_db_fetch": 0.0,
+            "qdrant_score": 0.0,
+            "load_embeddings": 0.0,
+            "local_score": 0.0,
+            "rerank": 0.0,
             "rag_generate": 0.0,
             "translate_out": 0.0,
         }
         request._timings = timings
         request._request_start = total_start
+        request._analysis_id = uuid.uuid4().hex
+        request._qdrant_status = _get_qdrant_status()
 
         message = (request.data.get("message") or "").strip()
         if not message:
             return Response({"error": "message is required"}, status=status.HTTP_400_BAD_REQUEST)
 
         original_message = message
+        request._analysis_message_len = len(original_message)
+        request._analysis_message_preview = _analysis_trim_message(original_message)
         search_message = message
         message_language = "uz"
         try:
@@ -1165,11 +1298,18 @@ class ChatAPIView(APIView):
             )
 
         try:
+            t_ensure = time.perf_counter()
             _ensure_embeddings()
+            timings["ensure_embeddings"] = round((time.perf_counter() - t_ensure) * 1000, 2)
         except Exception as exc:
-            return Response({"error": f"Embedding tayyorlash xatoligi: {exc}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response(
+                {"error": f"Embedding tayyorlash xatoligi: {exc}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
 
+        t_rewrite = time.perf_counter()
         rewritten_message = _rewrite_query_if_needed(search_message)
+        timings["rewrite_query"] = round((time.perf_counter() - t_rewrite) * 1000, 2)
 
         try:
             t_embed = time.perf_counter()
@@ -1183,8 +1323,21 @@ class ChatAPIView(APIView):
 
         if USE_QDRANT:
             try:
-                scored = _score_with_qdrant(query_vec, query_terms, requested_doc_code=requested_doc_code)
+                scored = _score_with_qdrant(
+                    query_vec,
+                    query_terms,
+                    requested_doc_code=requested_doc_code,
+                    timings=timings,
+                )
+                if isinstance(request._qdrant_status, dict):
+                    request._qdrant_status["used"] = True
+                    request._qdrant_status["ok"] = True
+                    request._qdrant_status.pop("error", None)
             except Exception as exc:
+                if isinstance(request._qdrant_status, dict):
+                    request._qdrant_status["used"] = True
+                    request._qdrant_status["ok"] = False
+                    request._qdrant_status["error"] = str(exc)
                 return Response({"error": f"Qdrant xatoligi: {exc}"}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
             if requested_doc_code and not scored:
@@ -1201,7 +1354,9 @@ class ChatAPIView(APIView):
                     }
                 )
         else:
+            t_load = time.perf_counter()
             embeddings = _get_embeddings_for_query()
+            timings["load_embeddings"] = round((time.perf_counter() - t_load) * 1000, 2)
             if requested_doc_code:
                 embeddings = _filter_embeddings_by_doc_code(embeddings, requested_doc_code)
                 if not embeddings:
@@ -1218,12 +1373,14 @@ class ChatAPIView(APIView):
                         }
                     )
 
+            t_score = time.perf_counter()
             scored = []
             for emb in embeddings:
                 semantic = cosine_similarity(query_vec, emb.vector)
                 keyword = _keyword_score(query_terms, emb)
                 score = semantic + (KEYWORD_WEIGHT * keyword)
                 scored.append((score, emb, semantic, keyword))
+            timings["local_score"] = round((time.perf_counter() - t_score) * 1000, 2)
 
         scored.sort(key=lambda x: x[0], reverse=True)
         best_score = scored[0][0] if scored else 0.0
@@ -1285,7 +1442,9 @@ class ChatAPIView(APIView):
             if score >= MIN_SCORE
         ]
         candidate_pairs = filtered[: max(RERANK_CANDIDATES, 5)]
+        t_rerank = time.perf_counter()
         reranked = _llm_rerank(search_message, candidate_pairs)
+        timings["rerank"] = round((time.perf_counter() - t_rerank) * 1000, 2)
         top_pairs = reranked[:5]
         top = [item for _, item, *_rest in top_pairs]
 

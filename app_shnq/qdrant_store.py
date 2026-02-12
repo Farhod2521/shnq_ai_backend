@@ -141,6 +141,26 @@ def count_points():
             return 0
         raise
 
+
+def health_check():
+    try:
+        _require_client()
+        info = client().get_collections()
+        names = [c.name for c in getattr(info, "collections", [])] if info else []
+        return {
+            "ok": True,
+            "collection_exists": QDRANT_COLLECTION in names,
+            "collection": QDRANT_COLLECTION,
+            "url": QDRANT_URL,
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "error": str(exc),
+            "collection": QDRANT_COLLECTION,
+            "url": QDRANT_URL,
+        }
+
 def upsert_point(point_id, vector, payload):
     if not vector:
         return

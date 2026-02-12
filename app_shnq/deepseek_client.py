@@ -3,6 +3,7 @@ import json
 import math
 import os
 import re
+import threading
 from typing import Any
 
 from openai import OpenAI
@@ -20,6 +21,13 @@ DEFAULT_BATCH_TRANSLATE_MAX_TOKENS = int(os.getenv("DEEPSEEK_BATCH_TRANSLATE_MAX
 FAST_LANGUAGE_DETECT = os.getenv("DEEPSEEK_FAST_LANGUAGE_DETECT", "1") == "1"
 EMBEDDING_FALLBACK = os.getenv("DEEPSEEK_EMBED_FALLBACK", "semantic_hash")
 STRICT_EMBEDDING = os.getenv("DEEPSEEK_EMBED_STRICT", "0") == "1"
+TRANSLATE_PROVIDER = os.getenv("TRANSLATE_PROVIDER", "deepseek").strip().lower()
+NLLB_MODEL_NAME = os.getenv("NLLB_MODEL", "facebook/nllb-200-distilled-1.3B").strip()
+NLLB_DEVICE = os.getenv("NLLB_DEVICE", "cpu").strip().lower()
+NLLB_BATCH_SIZE = int(os.getenv("NLLB_BATCH_SIZE", "8"))
+NLLB_MAX_NEW_TOKENS = int(os.getenv("NLLB_MAX_NEW_TOKENS", "256"))
+NLLB_NUM_THREADS = int(os.getenv("NLLB_NUM_THREADS", "0"))
+NLLB_NUM_INTEROP_THREADS = int(os.getenv("NLLB_NUM_INTEROP_THREADS", "0"))
 
 _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 _EMBED_MODEL_SUPPORT = {}
@@ -71,6 +79,20 @@ _UZ_HINT_WORDS = {
     "qurilish",
     "me'yor",
     "talab",
+}
+_NLLB_LANGS = {
+    "uz": "uzn_Latn",
+    "en": "eng_Latn",
+    "ru": "rus_Cyrl",
+    "ko": "kor_Hang",
+}
+_NLLB_LOCK = threading.Lock()
+_NLLB_STATE = {
+    "tokenizer": None,
+    "model": None,
+    "torch": None,
+    "device": None,
+    "error": None,
 }
 
 
@@ -314,6 +336,90 @@ def detect_query_language(
     return heuristic
 
 
+def _resolve_nllb_source_lang(text: str, source_language: str) -> str:
+    if source_language and source_language != "auto":
+        return source_language
+    return detect_query_language(text)
+
+
+def _load_nllb():
+    if _NLLB_STATE["tokenizer"] is not None or _NLLB_STATE["error"] is not None:
+        return
+    with _NLLB_LOCK:
+        if _NLLB_STATE["tokenizer"] is not None or _NLLB_STATE["error"] is not None:
+            return
+        try:
+            import torch
+            from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+            if NLLB_NUM_THREADS > 0:
+                torch.set_num_threads(NLLB_NUM_THREADS)
+            if NLLB_NUM_INTEROP_THREADS > 0:
+                torch.set_num_interop_threads(NLLB_NUM_INTEROP_THREADS)
+
+            device = NLLB_DEVICE
+            if device != "cpu" and device.startswith("cuda") and not torch.cuda.is_available():
+                device = "cpu"
+
+            tokenizer = AutoTokenizer.from_pretrained(NLLB_MODEL_NAME)
+            model = AutoModelForSeq2SeqLM.from_pretrained(NLLB_MODEL_NAME)
+            model.eval()
+            if device != "cpu":
+                model.to(device)
+
+            _NLLB_STATE["tokenizer"] = tokenizer
+            _NLLB_STATE["model"] = model
+            _NLLB_STATE["torch"] = torch
+            _NLLB_STATE["device"] = device
+        except Exception as exc:
+            _NLLB_STATE["error"] = exc
+
+
+def _nllb_translate_batch(texts, target_language: str, source_language: str = "auto"):
+    if not texts:
+        return []
+
+    src = _resolve_nllb_source_lang(texts[0], source_language)
+    if src not in _NLLB_LANGS or target_language not in _NLLB_LANGS:
+        raise ValueError("NLLB language not supported")
+
+    _load_nllb()
+    if _NLLB_STATE["error"] is not None:
+        raise RuntimeError(str(_NLLB_STATE["error"]))
+
+    tokenizer = _NLLB_STATE["tokenizer"]
+    model = _NLLB_STATE["model"]
+    torch = _NLLB_STATE["torch"]
+    device = _NLLB_STATE["device"]
+
+    src_code = _NLLB_LANGS[src]
+    tgt_code = _NLLB_LANGS[target_language]
+    tokenizer.src_lang = src_code
+
+    results = []
+    batch_size = max(1, int(NLLB_BATCH_SIZE))
+    for i in range(0, len(texts), batch_size):
+        chunk = texts[i : i + batch_size]
+        inputs = tokenizer(chunk, return_tensors="pt", padding=True, truncation=True)
+        if device and device != "cpu":
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+        with torch.inference_mode():
+            generated = model.generate(
+                **inputs,
+                forced_bos_token_id=tokenizer.lang_code_to_id[tgt_code],
+                max_new_tokens=NLLB_MAX_NEW_TOKENS,
+                num_beams=1,
+            )
+        decoded = tokenizer.batch_decode(generated, skip_special_tokens=True)
+        results.extend([item.strip() for item in decoded])
+    return results
+
+
+def _nllb_translate_text(text: str, target_language: str, source_language: str = "auto") -> str:
+    outputs = _nllb_translate_batch([text], target_language=target_language, source_language=source_language)
+    return outputs[0] if outputs else text
+
+
 def translate_text(
     text: str,
     target_language: str,
@@ -326,6 +432,17 @@ def translate_text(
     payload = (text or "").strip()
     if not payload:
         return payload
+    if source_language and target_language and source_language != "auto":
+        if source_language == target_language:
+            return payload
+
+    if TRANSLATE_PROVIDER == "nllb":
+        try:
+            translated = _nllb_translate_text(payload, target_language=target_language, source_language=source_language)
+            if translated and translated.strip():
+                return translated.strip()
+        except Exception:
+            pass
 
     source_label = _LANG_LABELS.get(source_language, "auto")
     target_label = _LANG_LABELS.get(target_language, "Uzbek")
@@ -427,6 +544,18 @@ def _batch_translate_texts(
 ):
     if not texts:
         return []
+
+    if TRANSLATE_PROVIDER == "nllb":
+        try:
+            translated = _nllb_translate_batch(
+                list(texts),
+                target_language=target_language,
+                source_language=source_language,
+            )
+            if translated and len(translated) == len(texts):
+                return [str(item) for item in translated]
+        except Exception:
+            pass
 
     source_label = _LANG_LABELS.get(source_language, "auto")
     target_label = _LANG_LABELS.get(target_language, "Uzbek")

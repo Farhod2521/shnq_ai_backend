@@ -1,0 +1,540 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.5, user-scalable=yes">
+    <title>🏗️ Mobil test · Qurilish inspeksiyasi</title>
+    <style>
+        /* GLOBAL MOBILE-FIRST */
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        body {
+            background: #d4e7e6;
+            background: linear-gradient(145deg, #cadddd 0%, #d1e4e8 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 12px;
+            /* mobile uchun yumshoq padding */
+        }
+
+        /* asosiy karta – mobile ekranga to‘liq mos */
+        .test-card {
+            max-width: 600px;      /* planshetgacha chiroyli, telefonda 100% */
+            width: 100%;
+            background: rgba(255, 255, 255, 0.9);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border-radius: 36px;
+            box-shadow: 0 16px 32px -8px rgba(7, 58, 64, 0.25);
+            padding: 24px 20px;
+            border: 1px solid rgba(64, 172, 160, 0.4);
+            transition: all 0.2s;
+        }
+
+        /* sarlavha mobil kichik ekranga mos */
+        h1 {
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            font-size: 1.6rem;
+            font-weight: 700;
+            color: #0b4a50;
+            letter-spacing: -0.02em;
+            margin-bottom: 16px;
+            border-bottom: 3px solid #39a094;
+            padding-bottom: 12px;
+        }
+
+        h1 span {
+            background: #0f595e;
+            color: white;
+            font-size: 0.8rem;
+            padding: 6px 16px;
+            border-radius: 40px;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        /* jonli indikatorlar mobil flex wrap */
+        .live-header {
+            display: flex;
+            flex-direction: row;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+            gap: 10px;
+        }
+
+        .live-indicator {
+            background: #ffefcf;
+            border-radius: 50px;
+            padding: 8px 18px;
+            font-weight: 600;
+            color: #6e4f1a;
+            border: 1px solid #f5c56e;
+            font-size: 0.85rem;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            backdrop-filter: blur(4px);
+        }
+
+        .score-live {
+            background: #0d5f64;
+            color: white;
+            padding: 8px 22px;
+            border-radius: 50px;
+            font-weight: 700;
+            font-size: 1rem;
+            letter-spacing: 0.5px;
+            box-shadow: 0 4px 0 #053f42;
+            white-space: nowrap;
+        }
+
+        /* asosiy test oynasi – mobil silliq */
+        .quiz-window {
+            background: #f3fafc;
+            border-radius: 28px;
+            padding: 24px 18px;
+            box-shadow: inset 0 1px 6px rgba(0,0,0,0.02), 0 8px 20px rgba(19, 82, 82, 0.12);
+            margin-bottom: 8px;
+        }
+
+        .savol-raqam {
+            font-weight: 700;
+            color: #0e6b64;
+            background: #d4f0ec;
+            display: inline-block;
+            padding: 6px 18px;
+            border-radius: 40px;
+            font-size: 0.8rem;
+            letter-spacing: 0.6px;
+            margin-bottom: 16px;
+        }
+
+        .savol-matri {
+            font-size: 1.35rem;
+            font-weight: 650;
+            line-height: 1.4;
+            color: #074049;
+            margin-bottom: 24px;
+            word-break: break-word;
+        }
+
+        /* variantlar mobile uchun katta bosiladigan */
+        .variantlar {
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            margin-bottom: 28px;
+        }
+
+        .variant {
+            background: white;
+            border: 2px solid #c6dee2;
+            border-radius: 22px;
+            padding: 14px 18px;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            cursor: pointer;
+            transition: 0.07s;
+            font-weight: 500;
+            color: #145a60;
+            position: relative;
+            touch-action: manipulation;
+            box-shadow: 0 2px 3px rgba(0,0,0,0.02);
+            word-break: break-word;
+        }
+
+        /* mobil bosilganda reaksiya */
+        .variant:active {
+            background: #d2f0ed;
+            transform: scale(0.99);
+        }
+
+        .variant.selected-correct {
+            background: #dbf3e6;
+            border-color: #0f8f74;
+            border-width: 2.2px;
+            box-shadow: 0 0 0 3px rgba(30, 140, 120, 0.15);
+        }
+
+        .variant.selected-wrong {
+            background: #ffe9e5;
+            border-color: #c04a3a;
+            border-width: 2.2px;
+            box-shadow: 0 0 0 3px rgba(193, 78, 57, 0.12);
+        }
+
+        .variant-letter {
+            background: #1c706a;
+            color: white;
+            width: 46px;
+            height: 46px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 18px;
+            font-weight: 800;
+            font-size: 1.5rem;
+            flex-shrink: 0;
+            box-shadow: 0 4px 0 #0b4440;
+        }
+
+        /* badge mobil yaxshi ko‘rinsin */
+        .result-badge {
+            margin-left: auto;
+            font-weight: 700;
+            padding: 8px 16px;
+            border-radius: 40px;
+            font-size: 0.85rem;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        .correct-badge { background: #108b70; color: white; }
+        .wrong-badge { background: #b63e2e; color: white; }
+
+        /* feedback panel – mobil */
+        .feedback-panel {
+            margin-top: 12px;
+            margin-bottom: 16px;
+            background: #fffcf0;
+            border-radius: 26px;
+            padding: 18px 20px;
+            border-left: 10px solid #26968b;
+            font-size: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            flex-wrap: wrap;
+            word-break: break-word;
+        }
+
+        .feedback-emoji { font-size: 1.9rem; }
+        .feedback-text { font-weight: 550; color: #175a5a; line-height: 1.4; }
+
+        /* navigatsiya tugmalari – katta va mobilga mos */
+        .nav-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-top: 8px;
+            gap: 12px;
+        }
+
+        .btn {
+            border: none;
+            background: white;
+            padding: 16px 22px;
+            border-radius: 60px;
+            font-weight: 700;
+            font-size: 1rem;
+            border: 1.5px solid #29968c;
+            color: #0b5550;
+            transition: 0.12s;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            box-shadow: 0 5px 0 #1a6d64;
+            flex: 1;
+            touch-action: manipulation;
+            background: #f9fffe;
+        }
+
+        .btn:active {
+            transform: translateY(4px);
+            box-shadow: 0 1px 0 #1a6d64;
+        }
+
+        .btn:disabled {
+            opacity: 0.45;
+            transform: none;
+            box-shadow: 0 4px 0 #8fb3af;
+            pointer-events: none;
+            border-color: #96b7b2;
+        }
+
+        /* qayta boshlash tugmasi – mobil katta */
+        .restart-btn {
+            background: #0e6a60;
+            color: white;
+            border-color: #05534b;
+            box-shadow: 0 7px 0 #04423d;
+            font-size: 1.1rem;
+            padding: 16px 28px;
+            width: 100%;
+            border-radius: 60px;
+            font-weight: 700;
+            margin-top: 12px;
+            border: 1px solid #44bfb0;
+        }
+        .restart-btn:active {
+            transform: translateY(6px);
+            box-shadow: 0 1px 0 #033a36;
+        }
+
+        footer {
+            margin-top: 24px;
+            color: #236b6b;
+            font-weight: 600;
+            text-align: center;
+            font-size: 0.8rem;
+            padding: 8px;
+        }
+
+        /* juda kichik ekran (iPhone SE va b.) */
+        @media (max-width: 400px) {
+            .test-card { padding: 18px 14px; }
+            .savol-matri { font-size: 1.2rem; }
+            .variant { padding: 12px 14px; }
+            .variant-letter { width: 42px; height: 42px; font-size: 1.3rem; }
+            .btn { padding: 14px 16px; }
+            .score-live { padding: 6px 16px; font-size: 0.9rem; }
+        }
+
+        /* planshetda ham markazlashgan */
+        @media (min-width: 700px) {
+            body { padding: 30px; }
+            .test-card { max-width: 750px; }
+        }
+
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <div class="test-card">
+        <h1>
+            🧱 Inspeksiya
+            <span>javob · natija</span>
+        </h1>
+
+        <!-- Mobil mos jonli ball va indikator -->
+        <div class="live-header">
+            <div class="live-indicator">
+                ⚡️ Tanla va natijani ko‘r
+            </div>
+            <div id="liveScoreDisplay" class="score-live">
+                0 / 30
+            </div>
+        </div>
+
+        <!-- DINAMIK TEST MAYDONI -->
+        <div id="quizDynamicArea"></div>
+
+        <!-- DOIMIY QAYTA BOSHLASH TUGMASI (mobile full width) -->
+        <button id="globalRestartBtn" class="btn restart-btn">
+            🔄 Yangi test · random savollar
+        </button>
+  
+    </div>
+
+    <script>
+        (function() {
+            // ---------- 30 ta savol (CSV asosida) ----------
+            const questionBank = [
+                {savol: "Farmon qachon qabul qilingan?", A: "2024-yil 14-aprel", B: "2025-yil 14-aprel", C: "2023-yil 14-may", D: "2026-yil 10-iyun", togri: "B", ball: 1},
+                {savol: "Inspeksiya qaysi tashkilotga bo‘ysunadi?", A: "Prezident Administratsiyasi", B: "Vazirlar Mahkamasi", C: "Sudlar", D: "Mahalliy hokimiyat", togri: "B", ball: 1},
+                {savol: "Inspeksiyaning ustuvor yo‘nalishi EMAS?", A: "Yo‘l qurilishi nazorati", B: "Sifatsiz materiallarning oldini olish", C: "Muhandislar malakasini oshirish", D: "Materiallarni import qilish", togri: "D", ball: 1},
+                {savol: "Eskrou tizimi nima?", A: "Moliyalashtirish", B: "Pul yoki mol-mulkni uchinchi shaxs saqlashi", C: "Kredit", D: "Subsidiya", togri: "B", ball: 1},
+                {savol: "Notar-Anderkonto nima?", A: "Kredit", B: "Notarius ochgan maxsus hisob", C: "Davlat byudjeti", D: "Soliq imtiyozi", togri: "B", ball: 1},
+                {savol: "Qurilishda nazorat turlari?", A: "Texnik", B: "Ichki", C: "Texnik, mualliflik va ichki", D: "Davlat", togri: "C", ball: 1},
+                {savol: "Ko‘p uchraydigan huquqbuzarliklar?", A: "Loyihaga rioya qilmaslik", B: "Kechiktirish", C: "Kam haq", D: "Tozalamaslik", togri: "A", ball: 1},
+                {savol: "Inspeksiya qaysi sohada nazorat qiladi?", A: "Qurilish", B: "Kommunal", C: "Qurilish va kommunal", D: "Yo‘l", togri: "C", ball: 1},
+                {savol: "Eskrou qanday xavfni kamaytiradi?", A: "Narx oshishi", B: "Pul to‘lab mulksiz qolish", C: "Ofat", D: "Valyuta", togri: "B", ball: 1},
+                {savol: "Shartnomalar erkinligi qaysi modda?", A: "100-modda", B: "354-modda", C: "500-modda", D: "860-modda", togri: "B", ball: 1},
+                {savol: "Inspeksiya vazifasi?", A: "Moliyalashtiradi", B: "Boshlash va topshirishni nazorat", C: "Sotadi", D: "Ta’minlaydi", togri: "B", ball: 1},
+                {savol: "Qurilish sifati nimaga bog‘liq?", A: "Material", B: "Loyiha", C: "Mustahkamlik va xavfsizlik", D: "Dizayn", togri: "C", ball: 1},
+                {savol: "Davlat nazorati qaysi yo‘nalishda raqamlashtiriladi?", A: "Ishlab chiqarish", B: "Davlat nazorati", C: "Masofaviy boshqaruv", D: "Rejalash", togri: "B", ball: 1},
+                {savol: "Eskrou tizimi maqsadi?", A: "Kredit", B: "Aldovning oldini olish", C: "Byudjet", D: "Narxni pasaytirish", togri: "B", ball: 1},
+                {savol: "Avariya qachon tekshiriladi?", A: "Ofatdan keyin", B: "Qurilish avariyasi", C: "YTH", D: "Sanoat", togri: "B", ball: 1},
+                {savol: "Eskrou puli qachongacha egaga tegishli?", A: "Doim", B: "Bankda", C: "Huquq paydo bo‘lguncha", D: "Imzogacha", togri: "C", ball: 1},
+                {savol: "Inspeksiya qanday nazorat qiladi?", A: "Ichki", B: "Mualliflik", C: "Davlat", D: "Xalqaro", togri: "C", ball: 1},
+                {savol: "Sudlar qaysi da’volarni ko‘radi?", A: "Shartnoma", B: "Sifatsiz qurilish zarari", C: "Moliyaviy", D: "Mehnat", togri: "B", ball: 1},
+                {savol: "Seysmik hududda chora?", A: "To‘xtatiladi", B: "Zaiflik baholanadi", C: "Material", D: "Ko‘chirish", togri: "B", ball: 1},
+                {savol: "Sifatni ta’minlash uchun?", A: "Qonun", B: "Nazorat va sud", C: "Standart", D: "Barchasi", togri: "D", ball: 1},
+                {savol: "Kim shikoyat berishi mumkin?", A: "Qaror egasi", B: "Jabrlanuvchi", C: "Barchasi", D: "Organ", togri: "C", ball: 1},
+                {savol: "Mulkdor bo‘lish huquqi?", A: "Iqtisodiy", B: "Ijtimoiy", C: "Madaniy", D: "Ekologik", togri: "A", ball: 1},
+                {savol: "Aybdor g‘ayrihuquqiy qilmish?", A: "Ayblanuvchi", B: "Jinoyat", C: "Huquqbuzarlik", D: "Javobgarlik", togri: "C", ball: 1},
+                {savol: "JK 229-3 modda jazo?", A: "1 yil", B: "2 yil", C: "3 yil", D: "4 yil", togri: "B", ball: 1},
+                {savol: "Bayonnoma qayerga yuboriladi?", A: "IIB", B: "Prokuratura", C: "Sud", D: "DXX", togri: "C", ball: 1},
+                {savol: "Shartnoma tuzish qaysi kodeks?", A: "JK", B: "MK", C: "FK", D: "SK", togri: "C", ball: 1},
+                {savol: "MJTK 99-modda nima haqida?", A: "Suv", B: "Energiya", C: "Ekologiya", D: "Shaharsozlik", togri: "D", ball: 1},
+                {savol: "Ma’muriy huquqbuzarlik nima?", A: "Huquqbuzarlik", B: "Jazo", C: "Jinoiy", D: "Axloq", togri: "A", ball: 1},
+                {savol: "Davlat nazoratini kim muvofiqlashtiradi?", A: "Ekspertiza", B: "Institut", C: "Inspeksiya", D: "Rivojlanish", togri: "C", ball: 1},
+                {savol: "Ruxsatsiz qurish jarimasi?", A: "120 BHM", B: "140 BHM", C: "160 BHM", D: "150 BHM", togri: "D", ball: 1}
+            ];
+
+            // ---------- GLOBAL STATE ----------
+            let shuffledQuestions = [];
+            let userSelections = [];    // har bir savol uchun tanlangan variant (A,B,C,D yoki null)
+            let currentIndex = 0;
+
+            const quizArea = document.getElementById('quizDynamicArea');
+            const liveScoreEl = document.getElementById('liveScoreDisplay');
+            const restartBtn = document.getElementById('globalRestartBtn');
+
+            // ---------- YORDAMCHI ----------
+            function shuffleArray(arr) {
+                for (let i = arr.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [arr[i], arr[j]] = [arr[j], arr[i]];
+                }
+                return arr;
+            }
+
+            // Joriy to‘g‘ri javoblar soni
+            function computeCurrentScore() {
+                let correct = 0;
+                for (let i = 0; i < shuffledQuestions.length; i++) {
+                    const q = shuffledQuestions[i];
+                    const selected = userSelections[i];
+                    if (selected && selected === q.togri) {
+                        correct += q.ball;
+                    }
+                }
+                return correct;
+            }
+
+            function updateLiveScore() {
+                const correct = computeCurrentScore();
+                const total = shuffledQuestions.length;
+                liveScoreEl.innerText = `${correct} / ${total}`;
+            }
+
+            // ---------- ASOSIY RENDER (MOBILGA OPTIMALLANGAN) ----------
+            function renderCurrentQuestion() {
+                if (!shuffledQuestions.length || currentIndex >= shuffledQuestions.length) return;
+
+                const q = shuffledQuestions[currentIndex];
+                const selectedOpt = userSelections[currentIndex];
+
+                const letters = ['A', 'B', 'C', 'D'];
+                let optionsHtml = '';
+
+                letters.forEach(letter => {
+                    const optionText = q[letter];
+                    const isSelected = (selectedOpt === letter);
+                    let additionalClass = '';
+                    let badgeHtml = '';
+
+                    if (isSelected) {
+                        const isCorrect = (letter === q.togri);
+                        if (isCorrect) {
+                            additionalClass = 'selected-correct';
+                            badgeHtml = `<span class="result-badge correct-badge">✅ To‘g‘ri</span>`;
+                        } else {
+                            additionalClass = 'selected-wrong';
+                            badgeHtml = `<span class="result-badge wrong-badge">❌ Noto‘g‘ri</span>`;
+                        }
+                    }
+
+                    optionsHtml += `
+                        <div class="variant ${additionalClass}" data-option="${letter}">
+                            <span class="variant-letter">${letter}</span>
+                            <span style="flex:1; font-size:1.02rem; line-height:1.3;">${optionText}</span>
+                            ${badgeHtml}
+                        </div>
+                    `;
+                });
+
+                // Feedback panel – tanlangan bo‘lsa to‘g‘ri/noto‘g‘ri ko‘rsat
+                let feedbackHtml = '';
+                if (selectedOpt) {
+                    const isCorrect = (selectedOpt === q.togri);
+                    const correctLetter = q.togri;
+                    const correctAnswerText = q[correctLetter];
+                    if (isCorrect) {
+                        feedbackHtml = `
+                            <div class="feedback-panel">
+                                <span class="feedback-emoji">🏆</span>
+                                <span class="feedback-text">To‘g‘ri! (${correctLetter}) — ${correctAnswerText}</span>
+                            </div>
+                        `;
+                    } else {
+                        feedbackHtml = `
+                            <div class="feedback-panel" style="border-left-color: #bc4c3b;">
+                                <span class="feedback-emoji">⚠️</span>
+                                <span class="feedback-text">Noto‘g‘ri. To‘g‘ri javob: ${correctLetter} — ${correctAnswerText}</span>
+                            </div>
+                        `;
+                    }
+                } else {
+                    feedbackHtml = `
+                 
+                    `;
+                }
+
+                // navigatsiya tugmalari (disabled holati)
+                const prevDisabled = currentIndex === 0 ? 'disabled' : '';
+                const nextDisabled = currentIndex === shuffledQuestions.length - 1 ? 'disabled' : '';
+
+                const finalHtml = `
+                    <div class="quiz-window">
+                        <div style="display:flex; justify-content: space-between; align-items:center;">
+                            <span class="savol-raqam">${currentIndex+1}/${shuffledQuestions.length} · savol</span>
+                        </div>
+                        <div class="savol-matri">${q.savol}</div>
+                        <div class="variantlar" id="variantContainer">
+                            ${optionsHtml}
+                        </div>
+                        ${feedbackHtml}
+                        <div class="nav-row">
+                            <button class="btn" id="prevQuestionBtn" ${prevDisabled}>◀ Oldingi</button>
+                            <button class="btn" id="nextQuestionBtn" ${nextDisabled}>Keyingi ▶</button>
+                        </div>
+                    </div>
+                `;
+
+                quizArea.innerHTML = finalHtml;
+                updateLiveScore();
+
+                // ---------- EVENT LISTENERS (variant tanlash) ----------
+                const variantDivs = document.querySelectorAll('.variant');
+                variantDivs.forEach(div => {
+                    div.addEventListener('click', (e) => {
+                        const selectedOption = div.dataset.option;
+                        const currentSelected = userSelections[currentIndex];
+
+                        if (currentSelected === selectedOption) {
+                            userSelections[currentIndex] = null;   // bekor qilish
+                        } else {
+                            userSelections[currentIndex] = selectedOption;
+                        }
+                        renderCurrentQuestion();
+                    });
+                });
+
+                // oldingi keyingi
+                const prevBtn = document.getElementById('prevQuestionBtn');
+                if (prevBtn) prevBtn.addEventListener('click', () => { if (currentIndex > 0) { currentIndex--; renderCurrentQuestion(); } });
+                const nextBtn = document.getElementById('nextQuestionBtn');
+                if (nextBtn) nextBtn.addEventListener('click', () => { if (currentIndex < shuffledQuestions.length - 1) { currentIndex++; renderCurrentQuestion(); } });
+            }
+
+            // ---------- yangi test ----------
+            function startNewTest() {
+                shuffledQuestions = shuffleArray([...questionBank]);
+                userSelections = new Array(shuffledQuestions.length).fill(null);
+                currentIndex = 0;
+                updateLiveScore();
+                renderCurrentQuestion();
+            }
+
+            restartBtn.addEventListener('click', startNewTest);
+            window.addEventListener('DOMContentLoaded', startNewTest);
+        })();
+    </script>
+</body>
+</html>
