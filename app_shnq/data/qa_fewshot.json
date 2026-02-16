@@ -1,0 +1,402 @@
+[
+  {
+    "id": 1,
+    "question": "SHNQ 3.01.02-23 bo'yicha 38 band mazmunini tushuntiring.",
+    "answer": "38. Qurilish obyektlarida mazkur SHNQning 5-ilovasiga muvofiq tegishli xavfsizlik belgilarini oʻrnatish talab etiladi. Xavfsizlik belgilarining signal ranglari va oʻlchamlari GOST ISO 3864-1-2013 talablariga muvofiq boʻlishi lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "38",
+    "chapter": "4-bob. Qurilish maydonlari va ish joylarida xavfsizlik talablari"
+  },
+  {
+    "id": 2,
+    "question": "15-bob. Tosh-gʻisht ishlari doirasida 322 band nimalarni belgilaydi?",
+    "answer": "322. Havozalarda taxlangan materiallar va oʻrnatilgan inventar orasida kamida 60 sm kenglikda oʻtish yoʻlini qoldirish kerak.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "322",
+    "chapter": "15-bob. Tosh-gʻisht ishlari"
+  },
+  {
+    "id": 3,
+    "question": "SHNQ 3.01.02-23 dagi 50 band bo'yicha amaliy talablari qaysilar?",
+    "answer": "50 V dan yuqori kuchlanish bilan qizdirishda qoʻllaniladigan elektr mashinalari va apparatlarining korpuslari, shuningdek, kabelning metall qobigʻi yerga ulangan boʻlishi, qizdirish uchastkalarida yongʻinni oʻchirishning birlamchi vositalariga joylashtirilishi hamda navbatchilik oʻrnatilishi lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "50",
+    "chapter": "17-bob. Elektr montaj ishlari"
+  },
+  {
+    "id": 4,
+    "question": "156 bandda xavfsizlik bo'yicha qanday me'yor berilgan?",
+    "answer": "156. Bunda qurilish chiqindisi, qum, grunt va boshqa shu kabi tashilayotgan yuklar shahar koʻchalarini ifloslantirishini oldini olish maqsadida ularni suv bilan namlantirish kerak.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "156",
+    "chapter": "7-bob. Transportda tashish ishlari"
+  },
+  {
+    "id": 5,
+    "question": "SHNQ 3.01.02-23 89 bandida asosiy talab nima?",
+    "answer": "89. Mashinalar, transport vositalarini joylashtirish va ekspluatatsiya qilishda joy nishabligida yoki grunt choʻkkanda shamol taʼsiri ostida ularning qulashi yoki oʻz-oʻzidan koʻchishini ogohlantiruvchi chora-tadbirlar qabul qilingan boʻlishi lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "89",
+    "chapter": "5-bob. Qurilish mashinalarining ekspluatatsiyasi"
+  },
+  {
+    "id": 6,
+    "question": "SHNQ 3.01.02-23 bo'yicha 234 band mazmunini tushuntiring.",
+    "answer": "234. Tushish qudugʻi keskichining qirrasi ostida gruntni qazish ketma-ketligi uning turgʻunligini taʼminlashi lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "234",
+    "chapter": "11-bob. Sunʼiy asoslar va burgʻulash ishlari"
+  },
+  {
+    "id": 7,
+    "question": "13-bob. Yer ishlari doirasida 260 band nimalarni belgilaydi?",
+    "answer": "260. Yuqori kuchlanish kabellari, foydalanishdagi gaz oʻtkazmalari, boshqa kommunikatsiyalarning qoʻriqlanadigan zonasida hamda kasallik qoʻzgʻatuvchi bakteriyalar bilan (patogen) zararlanishi mumkin boʻlgan uchastkalar (axlat toʻplanadigan joylar, hayvon murdalari koʻmiladigan joylar, qabristonlar)da yer ishlarini shu kommunikatsiyalarni ekspluatatsiya qiluvchi tashkilot yoki sanitariya-epidemiologik osoyishtalik va jamoat salomatligi xizmatidan olingan ruxsatnomaga asosan amalga oshirish lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "260",
+    "chapter": "13-bob. Yer ishlari"
+  },
+  {
+    "id": 8,
+    "question": "SHNQ 3.01.02-23 dagi 204 band bo'yicha amaliy talablari qaysilar?",
+    "answer": "204. Xonalar ichida qatronli tarkiblarni qizdirish uchun ochiq alangali qurilmalarni qoʻllashga yoʻl qoʻyilmaydi.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "204",
+    "chapter": "10-bob. Izolyatsiyalash ishlari"
+  },
+  {
+    "id": 9,
+    "question": "334 bandda xavfsizlik bo'yicha qanday me'yor berilgan?",
+    "answer": "334. Toʻgʻri ilish va montaj qilishni taʼminlovchi montaj ilmoqlariga yoki aniq koʻrsatib qoʻyilgan belgilarga ega boʻlmagan yigʻma temirbeton konstruksiyalarni koʻtarish mumkin emas.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "334",
+    "chapter": "16-bob. Qurilish-montaj ishlari"
+  },
+  {
+    "id": 10,
+    "question": "SHNQ 3.01.02-23 223 bandida asosiy talab nima?",
+    "answer": "223. Bolgʻa va qoziqlarning kopyor uchun chegaraviy massasi uning fermasi yoki ramasida koʻrsatilgan boʻlishi lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "223",
+    "chapter": "11-bob. Sunʼiy asoslar va burgʻulash ishlari"
+  },
+  {
+    "id": 11,
+    "question": "SHNQ 3.01.02-23 bo'yicha 439 band mazmunini tushuntiring.",
+    "answer": "439. Boʻyoq tayyorlovchi zavod yoʻriqnomasi talablarini buzib, boʻyoq tarkiblarini tayyorlashga, shuningdek, zararli moddalar xususiyatlari toʻgʻrisida koʻrsatmalarni oʻz ichiga olgan sertifikatga ega boʻlmagan eritmalarni qoʻllash mumkin emas.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "439",
+    "chapter": "20-bob. Pardozlash ishlari"
+  },
+  {
+    "id": 12,
+    "question": "8-bob. Payvandlash ishlari doirasida 176 band nimalarni belgilaydi?",
+    "answer": "176. Ochiq havoda payvandlash ishlarini bir vaqtning oʻzida bir nechta payvandchilar bir-biriga yaqin joyda bajarayotganda va odamlar tigʻiz harakatlanayotgan uchastkalarda bunday toʻsiqlarni qoʻyish lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "176",
+    "chapter": "8-bob. Payvandlash ishlari"
+  },
+  {
+    "id": 13,
+    "question": "SHNQ 3.01.02-23 dagi 446 band bo'yicha amaliy talablari qaysilar?",
+    "answer": "446. Yuzalarni quruq tozalashda hamda chang va gazlar ajralib chiqishi bilan bogʻliq boʻlgan boshqa ishlarda, shuningdek, mexanizatsiyalashgan shpaklyovka va boʻyashda respiratorlar hamda himoya koʻzoynaklaridan foydalanish kerak.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "446",
+    "chapter": "20-bob. Pardozlash ishlari"
+  },
+  {
+    "id": 14,
+    "question": "55 bandda xavfsizlik bo'yicha qanday me'yor berilgan?",
+    "answer": "55. Zararli gaz paydo boʻlishi mumkin boʻlgan joylarda, shu jumladan yopiq sigʻimlar, quduqlar, transheyalar va shurflarda ishlarni bajarishdan oldin mazkur SHNQning 33-bandi talablariga muvofiq havo muhitini tahlil qilish lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "55",
+    "chapter": "4-bob. Qurilish maydonlari va ish joylarida xavfsizlik talablari"
+  },
+  {
+    "id": 15,
+    "question": "SHNQ 3.01.02-23 1 bandida asosiy talab nima?",
+    "answer": "1. Elektr uzatish havo liniyalari, gaz quvurlari, shuningdek, yengil alangalanuvchi yoki yonuvchan suyuqliklar, yonuvchi yoki suyultirilgan gazlar omborlarining qoʻriqlanadigan zonalarida qurilish mashinalaridan foydalanib bajariladigan qurilish-montaj ishlari.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "1",
+    "chapter": "20-bob. Pardozlash ishlari"
+  },
+  {
+    "id": 16,
+    "question": "SHNQ 3.01.02-23 bo'yicha 180 band mazmunini tushuntiring.",
+    "answer": "180. Kislorod ballonlarini ekspluatatsiya qilish, saqlash va koʻchirishda ballonlar hamda shlanglarning moylash materiallari, shuningdek, kiyim hamda moy dogʻlari oʻrnashib qolgan tozalash materiallariga tegishini bartaraf etuvchi choralar koʻzda tutilgan boʻlishi lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "180",
+    "chapter": "8-bob. Payvandlash ishlari"
+  },
+  {
+    "id": 17,
+    "question": "16-bob. Qurilish-montaj ishlari doirasida 367 band nimalarni belgilaydi?",
+    "answer": "367. Uskunani montaj qilishda uning oʻz-oʻzidan yoki tasodifiy ishga tushishi istisno qilinishi lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "367",
+    "chapter": "16-bob. Qurilish-montaj ishlari"
+  },
+  {
+    "id": 18,
+    "question": "SHNQ 3.01.02-23 dagi 315 band bo'yicha amaliy talablari qaysilar?",
+    "answer": "315. Qalinligi 0,75 m gacha boʻlgan tashqi devorlarni devor ustida turgan holda terish mumkin emas.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "315",
+    "chapter": "15-bob. Tosh-gʻisht ishlari"
+  },
+  {
+    "id": 19,
+    "question": "422 bandda xavfsizlik bo'yicha qanday me'yor berilgan?",
+    "answer": "422. Suv taʼminoti, kanalizatsiya, issiqlik taʼminoti tashqi quvuroʻtkazgichlarini pnevmatik sinashda ishlarni bajarish va qabul qilish qoidalariga rioya qilish lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "422",
+    "chapter": "18-bob. Uskunalarni sinash"
+  },
+  {
+    "id": 20,
+    "question": "SHNQ 3.01.02-23 71 bandida asosiy talab nima?",
+    "answer": "71. Binolarni qismlarga ajratgan holda buzish ishlari olib borilayotgan hududni toʻsiqlar bilan toʻsish kerak.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "71",
+    "chapter": "4-bob. Qurilish maydonlari va ish joylarida xavfsizlik talablari"
+  },
+  {
+    "id": 21,
+    "question": "SHNQ 3.01.02-23 bo'yicha 19 band mazmunini tushuntiring.",
+    "answer": "19. Qurilish maydonida yilning istalgan vaqtida yongʻin-qutqaruv va boshqa maxsus xizmatlarning tezkor avtomobillari harakatlana oladigan eni 6 m dan kam boʻlmagan qattiq qoplamali yoʻllar tashkil etilishi lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "19",
+    "chapter": "4-bob. Qurilish maydonlari va ish joylarida xavfsizlik talablari"
+  },
+  {
+    "id": 22,
+    "question": "14-bob. Beton va temir-beton ishlari doirasida 287 band nimalarni belgilaydi?",
+    "answer": "287. Qoliplar elementlarini bir necha yaruslarda oʻrnatishda har bir navbatdagi yarusni faqat pastki yarus mahkamlanganidan keyingina oʻrnatish mumkin.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "287",
+    "chapter": "14-bob. Beton va temir-beton ishlari"
+  },
+  {
+    "id": 23,
+    "question": "SHNQ 3.01.02-23 dagi 370 band bo'yicha amaliy talablari qaysilar?",
+    "answer": "370. Montaj jarayonida yuk koʻtarish vositalari yuk koʻtaruvchi kanatlar va koʻtargich (polispast)larning vertikaldan ogʻish burchaklari pasportda, tasdiqlangan loyihada yoki ushbu yuk koʻtarish vositasining texnik shartlarida koʻrsatilgan kattalikdan oshmasligi lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "370",
+    "chapter": "16-bob. Qurilish-montaj ishlari"
+  },
+  {
+    "id": 24,
+    "question": "186 bandda xavfsizlik bo'yicha qanday me'yor berilgan?",
+    "answer": "186. Yuklash va tushirish ishlari mazkur SHNK, GOST 12.3.009-76 va Yuk koʻtargich (minora)larni oʻrnatish va ulardan foydalanishda xavfsizlik qoidalariga (roʻyxat raqami 2313, 2012-yil 12-yanvar) muvofiq olib borilishi lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "186",
+    "chapter": "9-bob. Yuklash va tushirish ishlari"
+  },
+  {
+    "id": 25,
+    "question": "SHNQ 3.01.02-23 90 bandida asosiy talab nima?",
+    "answer": "90. Havo orqali elektr uzatish liniyalarining muhofaza zonasiga kuzovi koʻtariladigan yuk avtomobillarini joylashtirishda, shuningdek, bu zonada transport vositalaridan foydalanish paytida havo orqali elektr uzatish liniyalaridan kuchlanishni oʻchirish zarur.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "90",
+    "chapter": "5-bob. Qurilish mashinalarining ekspluatatsiyasi"
+  },
+  {
+    "id": 26,
+    "question": "SHNQ 3.01.02-23 bo'yicha 154 band mazmunini tushuntiring.",
+    "answer": "154. Transport vositalarining qurilish maydonlaridan shahar koʻchalariga chiqishida atrof-muhitning ifloslanishini bartaraf etish uchun qurilish materiallarini tashiydigan katta gabaritli yuk avtomobillar gʻildiraklarini yuvish tadbirini oʻtkazish zarur.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "154",
+    "chapter": "7-bob. Transportda tashish ishlari"
+  },
+  {
+    "id": 27,
+    "question": "8-bob. Payvandlash ishlari doirasida 160 band nimalarni belgilaydi?",
+    "answer": "160. Yongʻin xavfi ehtimoli bor xonalarda payvandlash ishlarini bajarish joyi yonmaydigan toʻsiq bilan himoyalangan boʻlishi va toʻsiqning balandligi kamida 2,5 m, toʻsiq va pol orasidagi masofa esa koʻpi bilan 5 cm ga teng boʻlishi kerak. Atsetilen generatorlarini gaz bilan payvandlash ishlari olib boriladigan joydan, ochiq alanga va qizib ketgan buyumlardan, kompressor va ventilyatorlar havo tortadigan joylardan kamida 10 m boʻlgan masofada toʻsib qoʻyilgan holda joylashtirish lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "160",
+    "chapter": "8-bob. Payvandlash ishlari"
+  },
+  {
+    "id": 28,
+    "question": "SHNQ 3.01.02-23 dagi 150 band bo'yicha amaliy talablari qaysilar?",
+    "answer": "150. Yuk (samosval) avtomobillarini koʻtarmalar va qazilma chuqurlarda yuksizlantirishda ularni tabiiy nishablik yoqasi (grunt buzilish prizmasi chegarasi)ga 1 m dan kam boʻlmagan yaqinlikda oʻrnatish, estakadalardan yuksizlantirishda esa mazkur avtomobillarni ishonchli qaytaruvchi yogʻoch bruslar bilan jihozlash lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "150",
+    "chapter": "7-bob. Transportda tashish ishlari"
+  },
+  {
+    "id": 29,
+    "question": "358 bandda xavfsizlik bo'yicha qanday me'yor berilgan?",
+    "answer": "358. Bino konstruksiyasi montaji olib borilayotgan qamrovlarda konstruksiya elementlarini koʻchirish paytida liftdan foydalanish mumkin emas.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "358",
+    "chapter": "16-bob. Qurilish-montaj ishlari"
+  },
+  {
+    "id": 30,
+    "question": "SHNQ 3.01.02-23 265 bandida asosiy talab nima?",
+    "answer": "265. Kotlovan yoki transheyadan chiqarilgan gruntni chuqur chetidan 0,5 m dan kam boʻlmagan masofada joylashtirish kerak.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "265",
+    "chapter": "13-bob. Yer ishlari"
+  },
+  {
+    "id": 31,
+    "question": "SHNQ 3.01.02-23 bo'yicha 105 band mazmunini tushuntiring.",
+    "answer": "105. Transport vositalarining oʻtish joylari yaqinida oʻrnatiladigan havozalarning toʻshama vositalari transport vositalari gabaritidan 0,6 m dan kam boʻlmagan masofada oʻrnatiladi.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "105",
+    "chapter": "6-bob. Texnologik anjomlar va asboblar ekspluatatsiyasi"
+  },
+  {
+    "id": 32,
+    "question": "8-bob. Payvandlash ishlari doirasida 165 band nimalarni belgilaydi?",
+    "answer": "165. Yopiq hajmli inshootlar ichida elektr va gaz payvandlash ishlarini bir vaqtning oʻzida olib borish mumkin emas.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "165",
+    "chapter": "8-bob. Payvandlash ishlari"
+  },
+  {
+    "id": 33,
+    "question": "SHNQ 3.01.02-23 dagi 149 band bo'yicha amaliy talablari qaysilar?",
+    "answer": "149. Transport vositalari daryo va suv havzalarining muzlagan sirtida muzli oʻtkazish joylarining maksimal yoʻl qoʻyiladigan yuk koʻtaruvchanligi toʻgʻrisida koʻrsatkichlarga ega boʻlgan maxsus belgilangan marshrut boʻyicha harakatlanishi lozim, faqat transport vositalarini haydovchi kabinasi eshigining ochiq holatini taʼminlagan holda boshqarishi kerak.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "149",
+    "chapter": "7-bob. Transportda tashish ishlari"
+  },
+  {
+    "id": 34,
+    "question": "151 bandda xavfsizlik bo'yicha qanday me'yor berilgan?",
+    "answer": "151. Yuk (samosval) avtomobillar zarur boʻlgan hollarda koʻtarilgan kuzovni ushlab turish uchun maxsus tayanchlar bilan taʼminlangan boʻlishi lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "151",
+    "chapter": "7-bob. Transportda tashish ishlari"
+  },
+  {
+    "id": 35,
+    "question": "SHNQ 3.01.02-23 429 bandida asosiy talab nima?",
+    "answer": "429. Nishabligi 20° dan ortiq boʻlgan tomda, shuningdek, xodimlar ogʻirligidan tushadigan yuklarga moʻljallanmagan qoplamali tomlarda xodimlarning oʻtishi va oyoqlarini tirab turishi uchun koʻndalang taxtachali eni 0,3 m dan kam boʻlmagan traplarni oʻrnatish zarur.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "429",
+    "chapter": "19-bob. Tom ishlari"
+  },
+  {
+    "id": 36,
+    "question": "SHNQ 3.01.02-23 bo'yicha 84 band mazmunini tushuntiring.",
+    "answer": "84. Mashinalar qoʻllanadigan ishlar boshlangunga qadar ishlarni boshqaruvchi rahbar mashinalarning harakatlanish sxemasini va ularni oʻrnatish joylarini, mashinalarni yerga ulash usullari va joylarini aniqlashi, haydovchi (operator)ning mashinaga xizmat koʻrsatuvchi xodim-signal beruvchi bilan oʻzaro aloqada boʻlish va signal berish usullarini koʻrsatishi, signal beruvchining turadigan joyini aniqlashi (zarur boʻlganda) hamda ish zonasining lozim boʻlgan darajada yoritilishini taʼminlashi zarur.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "84",
+    "chapter": "5-bob. Qurilish mashinalarining ekspluatatsiyasi"
+  },
+  {
+    "id": 37,
+    "question": "13-bob. Yer ishlari doirasida 262 band nimalarni belgilaydi?",
+    "answer": "262. Koʻchalar, oʻtish joylari, aholi yashaydigan punktlarning hovlilarida, shuningdek, odamlar yoki transport harakati yuz beradigan joylarda qaziladigan kotlovan va transheyalar himoya toʻsiqlari bilan toʻsilishi lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "262",
+    "chapter": "13-bob. Yer ishlari"
+  },
+  {
+    "id": 38,
+    "question": "SHNQ 3.01.02-23 dagi 224 band bo'yicha amaliy talablari qaysilar?",
+    "answer": "224. Qoziqlar kopyor mashinistining faqat koʻrish chegaralarida kopyor asosida mahkamlangan qaytaruvchi blok orqali toʻgʻri chiziq boʻyicha tortiladi.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "224",
+    "chapter": "11-bob. Sunʼiy asoslar va burgʻulash ishlari"
+  },
+  {
+    "id": 39,
+    "question": "88 bandda xavfsizlik bo'yicha qanday me'yor berilgan?",
+    "answer": "88. Qiyaliklari mahkamlanmagan va oʻyilgan joylar (kotlovanlar, transheyalar, kanavalar va h.k.) yaqinida mashinalarni koʻchirish, oʻrnatish va ishlatishga faqat grunt buzilish prizmasi chegarasidan tashqarida ishlarni bajarish loyihalarida koʻrsatilgan masofada yoʻl qoʻyiladi.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "88",
+    "chapter": "5-bob. Qurilish mashinalarining ekspluatatsiyasi"
+  },
+  {
+    "id": 40,
+    "question": "SHNQ 3.01.02-23 123 bandida asosiy talab nima?",
+    "answer": "123. Tirab qoʻyiladigan zinapoyalarni hamda ochiladigan narvonlarni ish vaqtida ularning siljishi va agʻnashini bartaraf etuvchi qurilmalar bilan taʼminlash kerak.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "123",
+    "chapter": "6-bob. Texnologik anjomlar va asboblar ekspluatatsiyasi"
+  },
+  {
+    "id": 41,
+    "question": "SHNQ 3.01.02-23 bo'yicha 49 band mazmunini tushuntiring.",
+    "answer": "49. Orayopmalarda uskunalarni montaj qilish, liftlar, zinapoya kataklari va shu kabilarni qurish uchun moʻljallangan oraliqlar, ularga odamlarning yetib borishi mumkin boʻlganda, yaxlit qoplama bilan yopilgan boʻlishi yoki ular toʻsiqlarga ega boʻlishi lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "49",
+    "chapter": "4-bob. Qurilish maydonlari va ish joylarida xavfsizlik talablari"
+  },
+  {
+    "id": 42,
+    "question": "14-bob. Beton va temir-beton ishlari doirasida 312 band nimalarni belgilaydi?",
+    "answer": "312. Betonni qizdirishda qoʻllaniladigan elektr uskunani yangi joyga har gal koʻchirgandan soʻng simlarning izolyatsiyasi, toʻsiqlarning himoya vositalari va yerga ulanganlik holati koʻzdan kechirilishi lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "312",
+    "chapter": "14-bob. Beton va temir-beton ishlari"
+  },
+  {
+    "id": 43,
+    "question": "SHNQ 3.01.02-23 dagi 125 band bo'yicha amaliy talablari qaysilar?",
+    "answer": "125. Tirab qoʻyiladigan zinapoyaning oʻlchamlari xodimga uning yuqori oxirgi qismidan 1 m dan kam boʻlmagan masofadagi pogʻonasida tik turgan holatda ishlash imkonini taʼminlashi lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "125",
+    "chapter": "6-bob. Texnologik anjomlar va asboblar ekspluatatsiyasi"
+  },
+  {
+    "id": 44,
+    "question": "34 bandda xavfsizlik bo'yicha qanday me'yor berilgan?",
+    "answer": "34. Qurilish maydoni, ish uchastkalari, ish joylari, ularga kirish yoʻllari va yoʻlaklari sutkaning qorongʻi paytida GOCT 12.1.046 ga muvofiq yoritilishi zarur.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "34",
+    "chapter": "4-bob. Qurilish maydonlari va ish joylarida xavfsizlik talablari"
+  },
+  {
+    "id": 45,
+    "question": "SHNQ 3.01.02-23 175 bandida asosiy talab nima?",
+    "answer": "175. Ochiq elektr yoyi bilan payvandlashda payvandchilarning xonadagi ish joylari qoʻshni ish joylaridan va oʻtish joylaridan 1,8 m dan kam boʻlmagan balandlikda yonmaydigan ekran (shirma, shit)lar bilan qurshalgan holda ajratilgan boʻlishi lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "175",
+    "chapter": "8-bob. Payvandlash ishlari"
+  },
+  {
+    "id": 46,
+    "question": "SHNQ 3.01.02-23 bo'yicha 3 band mazmunini tushuntiring.",
+    "answer": "3. Mazkur buyruq Oʻzbekiston Respublikasi Favqulodda vaziyatlar vazirligi, Kambagʻallikni qisqartirish va bandlik vazirligi hamda Sogʻliqni saqlash vazirligi bilan kelishilgan.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "3",
+    "chapter": ""
+  },
+  {
+    "id": 47,
+    "question": "9-bob. Yuklash va tushirish ishlari doirasida 197 band nimalarni belgilaydi?",
+    "answer": "197. Transport vositalarini yuklayotganda, tashiladigan yukning ustki qismi koʻpriklar ostidagi oʻtish joylari, tunnellarning gabarit balandliklaridan oshmasligi lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "197",
+    "chapter": "9-bob. Yuklash va tushirish ishlari"
+  },
+  {
+    "id": 48,
+    "question": "SHNQ 3.01.02-23 dagi 437 band bo'yicha amaliy talablari qaysilar?",
+    "answer": "437. Isitish tizimlaridan foydalanishning iloji boʻlmaganda, qurilayotgan binolar va inshootlar xonalarini quritish uchun havo isitgich (elektr yoki suyuq yoqilgʻida ishlaydigan isitgich)lardan foydalaniladi. Ularni oʻrnatishda Yongʻin xavfsizligi qoidalari talablari bajarilishi lozim.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "437",
+    "chapter": "20-bob. Pardozlash ishlari"
+  },
+  {
+    "id": 49,
+    "question": "415 bandda xavfsizlik bo'yicha qanday me'yor berilgan?",
+    "answer": "415. Atrofdagi shaxslar oʻz vaqtida ogohlantirilganidan hamda sinovlar rahbarining ruxsati olinganidan keyin uskuna sinovdan oʻtkaziladi.",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "415",
+    "chapter": "18-bob. Uskunalarni sinash"
+  },
+  {
+    "id": 50,
+    "question": "SHNQ 3.01.02-23 1 bandida asosiy talab nima?",
+    "answer": "1-qism. Signal va belgilarni loyihalashtirish tamoyillari” (rasmiy manbaa: GOST ISO 3864-1-2013 Graficheskiye simvoli. Signalnie sveta i znaki bezopasnosti. Chast 1. Prinsipi proyektirovaniya znakov i signalnoy razmetki);",
+    "shnq_code": "SHNQ 3.01.02-23",
+    "clause_number": "1",
+    "chapter": "1-bob. Shaharsozlik normalari va qoidalari, sanitariya qoidalari, normalari va gigiyena normativlari hamda texnik jihatdan tartibga solish sohasidagi normativ hujjatlarga havolalar"
+  }
+]

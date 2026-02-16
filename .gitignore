@@ -1,0 +1,33 @@
+# Python
+.env
+*.env
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtualenv
+venv/
+.venv/
+env/
+
+media/
+staticfiles/
+*.log
+local_settings.py
+
+# Django migrations (ignore generated files, keep package)
+**/migrations/*.py
+!**/migrations/__init__.py
+
+# OS / editor
+.vscode/
+Thumbs.db
+*.swp
