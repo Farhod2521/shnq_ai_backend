@@ -10,7 +10,11 @@ import httpx
 from openai import OpenAI
 
 
-DEFAULT_BASE_URL = (os.getenv("OPENAI_BASE_URL") or "").strip() or None
+DEFAULT_BASE_URL = (
+    os.getenv("OPENAI_BASE_URL")
+    or os.getenv("DEEPSEEK_BASE_URL")
+    or ""
+).strip() or None
 DEFAULT_EMBED_MODEL = os.getenv("OPENAI_EMBED_MODEL", os.getenv("DEEPSEEK_EMBED_MODEL", "text-embedding-3-small"))
 DEFAULT_CHAT_MODEL = os.getenv("OPENAI_CHAT_MODEL", os.getenv("DEEPSEEK_CHAT_MODEL", "gpt-4o-mini"))
 DEFAULT_EMBED_DIM = int(os.getenv("OPENAI_EMBED_DIM", os.getenv("DEEPSEEK_EMBED_DIM", "768")))
@@ -49,13 +53,28 @@ _EN_HINT_WORDS = {
     "how",
     "is",
     "are",
+    "be",
     "the",
     "and",
     "or",
     "for",
     "with",
+    "in",
+    "of",
+    "to",
+    "from",
+    "by",
+    "on",
+    "at",
     "shall",
     "must",
+    "required",
+    "minimum",
+    "maximum",
+    "distance",
+    "depth",
+    "height",
+    "width",
     "requirements",
     "fire",
     "safety",
@@ -68,15 +87,30 @@ _UZ_HINT_WORDS = {
     "nima",
     "necha",
     "kerak",
+    "bu",
+    "shu",
+    "ham",
+    "emas",
+    "mumkin",
+    "lozim",
     "bo'yicha",
     "bilan",
     "yoki",
     "hujjat",
     "band",
+    "bandda",
     "jadval",
     "masofa",
+    "masofani",
     "balandlik",
     "kenglik",
+    "qazish",
+    "taqiqlanadi",
+    "yozilgan",
+    "qilinadi",
+    "ortiq",
+    "past",
+    "tomonga",
     "qurilish",
     "me'yor",
     "talab",
@@ -336,7 +370,7 @@ def _heuristic_detect_language(text: str) -> str:
 
     en_hits = sum(1 for t in tokens if t in _EN_HINT_WORDS)
     ascii_ratio = ascii_count / max(total, 1)
-    if en_hits >= 2 or (ascii_ratio > 0.98 and len(tokens) >= 4):
+    if en_hits >= 2 or (en_hits >= 1 and ascii_ratio > 0.98 and len(tokens) >= 4 and uz_hits == 0):
         return "en"
     return "uz"
 
