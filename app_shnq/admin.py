@@ -6,6 +6,8 @@ from .models import (
     Clause,
     ClauseEmbedding,
     Document,
+    ImageEmbedding,
+    NormImage,
     NormTable,
     NormTableCell,
     NormTableRow,
@@ -46,6 +48,20 @@ class ClauseAdmin(admin.ModelAdmin):
 class ClauseEmbeddingAdmin(admin.ModelAdmin):
     list_display = ("clause", "embedding_model", "token_count", "shnq_code")
     search_fields = ("clause__clause_number", "shnq_code", "chapter_title")
+
+
+@admin.register(NormImage)
+class NormImageAdmin(admin.ModelAdmin):
+    list_display = ("document", "appendix_number", "title", "order", "html_anchor")
+    list_filter = ("document", "appendix_number")
+    search_fields = ("document__code", "title", "context_text", "image_url", "html_anchor")
+    ordering = ("document", "order")
+
+
+@admin.register(ImageEmbedding)
+class ImageEmbeddingAdmin(admin.ModelAdmin):
+    list_display = ("image", "embedding_model", "token_count", "shnq_code")
+    search_fields = ("image__document__code", "image__title", "image_url", "shnq_code")
 
 
 @admin.register(QuestionAnswer)

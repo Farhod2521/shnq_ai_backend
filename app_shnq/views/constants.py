@@ -18,8 +18,16 @@ from ..deepseek_client import (
     translate_query_for_search,
     translate_html_preserving_tags,
 )
-from ..embeddings import cosine_similarity, upsert_clause_embeddings
-from ..models import Clause, ClauseEmbedding, NormTable, QuestionAnswer
+from ..embeddings import cosine_similarity, upsert_all_embeddings
+from ..models import (
+    Clause,
+    ClauseEmbedding,
+    ImageEmbedding,
+    NormImage,
+    NormTable,
+    QuestionAnswer,
+    ensure_runtime_tables,
+)
 from ..qdrant_store import count_points as qdrant_count_points, search as qdrant_search
 
 
@@ -54,6 +62,8 @@ RAG_TRANSLATION_FALLBACK_THRESHOLD = float(
     os.getenv("RAG_TRANSLATION_FALLBACK_THRESHOLD", str(STRICT_MIN_SCORE))
 )
 RAG_TRANSLATED_QUERY_SCORE_WEIGHT = float(os.getenv("RAG_TRANSLATED_QUERY_SCORE_WEIGHT", "0.97"))
+RAG_IMAGE_MIN_SCORE = float(os.getenv("RAG_IMAGE_MIN_SCORE", "0.22"))
+RAG_IMAGE_TOP_K = int(os.getenv("RAG_IMAGE_TOP_K", "3"))
 
 _EMBED_CACHE_MODEL = None
 _EMBED_CACHE_DATA = None

@@ -45,6 +45,7 @@ from .services import (
     _can_answer_with_relaxed_threshold,
     _cleanup_answer_format,
     _ensure_embeddings,
+    _extract_image_url_from_text,
     _extract_doc_code,
     _extract_query_terms,
     _filter_embeddings_by_doc_code,
@@ -52,6 +53,7 @@ from .services import (
     _get_embeddings_for_query,
     _is_clearly_out_of_scope,
     _is_greeting,
+    _is_image_clause_text,
     _is_shnq_related,
     _is_table_direct_lookup_request,
     _is_table_request,
@@ -61,10 +63,12 @@ from .services import (
     _pick_related_table_from_rag,
     _pick_fewshot_examples,
     _rewrite_query_if_needed,
+    _search_image_embeddings,
     _score_with_qdrant,
     _should_ask_document_clarification,
     _table_candidate_chapters,
     _table_candidate_docs,
+    _image_text_for_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -88,16 +92,81 @@ def _merge_scored_candidates(primary, secondary, secondary_weight=1.0):
     return combined
 
 
-def _build_retrieval_fallback_answer(top_pairs):
+def _merge_image_candidates(primary, secondary, secondary_weight=1.0):
+    merged = {}
+
+    for score, emb, semantic, keyword in primary:
+        merged[str(emb.image_id)] = (score, emb, semantic, keyword)
+
+    for score, emb, semantic, keyword in secondary:
+        weighted_score = score * secondary_weight
+        current = merged.get(str(emb.image_id))
+        candidate = (weighted_score, emb, semantic, keyword)
+        if current is None or weighted_score > current[0]:
+            merged[str(emb.image_id)] = candidate
+
+    combined = list(merged.values())
+    combined.sort(key=lambda x: x[0], reverse=True)
+    return combined
+
+
+def _build_retrieval_fallback_answer(top_pairs, image_pairs=None):
     if not top_pairs:
+        if image_pairs:
+            return "Mos rasm topildi. Rasm URL manbalar bo'limida berildi."
         return "Mos band topilmadi."
 
     _score, emb, _semantic, _keyword = top_pairs[0]
     clause_text = (emb.clause.text or "").strip()
     if not clause_text:
         return "LLM vaqtincha ishlamayapti, lekin mos manba topildi."
+    if _is_image_clause_text(clause_text) and _extract_image_url_from_text(clause_text):
+        return "Mos rasm topildi. Rasm URL manbalar bo'limida berildi."
 
     return clause_text
+
+
+def _build_clause_source(score, emb, semantic, keyword):
+    clause = emb.clause
+    source = {
+        "type": "clause",
+        "shnq_code": emb.shnq_code,
+        "chapter": emb.chapter_title,
+        "clause_number": emb.clause_number,
+        "html_anchor": clause.html_anchor,
+        "lex_url": emb.lex_url,
+        "snippet": (clause.text or "")[:280],
+        "score": round(score, 4),
+        "semantic_score": round(semantic, 4),
+        "keyword_score": round(keyword, 4),
+    }
+    clause_text = clause.text or ""
+    image_url = _extract_image_url_from_text(clause_text)
+    if _is_image_clause_text(clause_text) and image_url:
+        cleaned = clause_text.replace("[IMAGE]", "Rasm:", 1)
+        if "URL:" in cleaned:
+            cleaned = cleaned.split("URL:", 1)[0].rstrip(" |")
+        source["type"] = "image"
+        source["image_url"] = image_url
+        source["snippet"] = cleaned[:280]
+    return source
+
+
+def _build_image_source(score, emb, semantic, keyword):
+    image = emb.image
+    return {
+        "type": "image",
+        "shnq_code": emb.shnq_code,
+        "chapter": emb.chapter_title,
+        "appendix_number": emb.appendix_number,
+        "title": image.title,
+        "html_anchor": image.html_anchor,
+        "image_url": image.image_url,
+        "snippet": _image_text_for_context(image)[:280],
+        "score": round(score, 4),
+        "semantic_score": round(semantic, 4),
+        "keyword_score": round(keyword, 4),
+    }
 
 
 class ChatAPIView(APIView):
@@ -419,7 +488,23 @@ class ChatAPIView(APIView):
                 )
                 translation_fallback_used = True
 
-        if requested_doc_code and not scored:
+        image_pairs = _search_image_embeddings(
+            rewritten_primary,
+            requested_doc_code=requested_doc_code,
+        )
+        if rewritten_secondary:
+            secondary_image_pairs = _search_image_embeddings(
+                rewritten_secondary,
+                requested_doc_code=requested_doc_code,
+            )
+            if secondary_image_pairs:
+                image_pairs = _merge_image_candidates(
+                    image_pairs,
+                    secondary_image_pairs,
+                    secondary_weight=RAG_TRANSLATED_QUERY_SCORE_WEIGHT,
+                )
+
+        if requested_doc_code and not scored and not image_pairs:
             return Response(
                 {
                     "answer": f"{requested_doc_code} bo'yicha mos band topilmadi.",
@@ -458,7 +543,7 @@ class ChatAPIView(APIView):
 
         allow_relaxed = _can_answer_with_relaxed_threshold(scored, best_score)
         if best_score < STRICT_MIN_SCORE:
-            if allow_relaxed:
+            if allow_relaxed or image_pairs:
                 pass
             else:
                 clarification = _needs_clarification(search_message)
@@ -500,8 +585,9 @@ class ChatAPIView(APIView):
         reranked = _llm_rerank(original_message, candidate_pairs)
         top_pairs = reranked[:5]
         top = [item for _, item, *_rest in top_pairs]
+        image_top_pairs = image_pairs[:3]
 
-        if not top:
+        if not top and not image_top_pairs:
             clarification = _needs_clarification(search_message)
             if clarification:
                 code, question = clarification
@@ -526,6 +612,7 @@ class ChatAPIView(APIView):
             top,
             response_language=message_language,
             fewshot_examples=fewshot_examples,
+            image_sources=[item for _score, item, _semantic, _keyword in image_top_pairs],
         )
         try:
             t_rag = time.perf_counter()
@@ -538,26 +625,20 @@ class ChatAPIView(APIView):
             timings["rag_generate"] = round((time.perf_counter() - t_rag) * 1000, 2)
         except Exception as exc:
             logger.warning("rag_generate_failed: %s", exc)
-            answer = _build_retrieval_fallback_answer(top_pairs)
+            answer = _build_retrieval_fallback_answer(top_pairs, image_pairs=image_top_pairs)
         if not answer:
-            answer = top[0].clause.text
+            if top:
+                answer = top[0].clause.text
+            elif image_top_pairs:
+                answer = "Mos rasm topildi. Rasm URL manbalar bo'limida berildi."
+            else:
+                answer = "Mos band topilmadi."
         answer = _cleanup_answer_format(answer)
         sources = []
         for score, emb, semantic, keyword in top_pairs:
-            clause = emb.clause
-            sources.append(
-                {
-                    "shnq_code": emb.shnq_code,
-                    "chapter": emb.chapter_title,
-                    "clause_number": emb.clause_number,
-                    "html_anchor": clause.html_anchor,
-                    "lex_url": emb.lex_url,
-                    "snippet": clause.text[:280],
-                    "score": round(score, 4),
-                    "semantic_score": round(semantic, 4),
-                    "keyword_score": round(keyword, 4),
-                }
-            )
+            sources.append(_build_clause_source(score, emb, semantic, keyword))
+        for score, emb, semantic, keyword in image_top_pairs:
+            sources.append(_build_image_source(score, emb, semantic, keyword))
 
         related_table = _pick_related_table_from_rag(search_message, top_pairs)
         table_html = None
@@ -576,6 +657,16 @@ class ChatAPIView(APIView):
                     "html": table_html,
                 }
             )
+        image_urls = []
+        seen_image_urls = set()
+        for item in sources:
+            if not isinstance(item, dict):
+                continue
+            url = item.get("image_url")
+            if not url or url in seen_image_urls:
+                continue
+            seen_image_urls.add(url)
+            image_urls.append(url)
 
         QuestionAnswer.objects.create(
             question=original_message,
@@ -588,6 +679,7 @@ class ChatAPIView(APIView):
                 "answer": answer,
                 "sources": sources,
                 "table_html": table_html,
+                "image_urls": image_urls,
                 "meta": {
                     "type": "rag",
                     "model": CHAT_MODEL,
@@ -607,6 +699,7 @@ class ChatAPIView(APIView):
                     "translation_fallback_threshold": RAG_TRANSLATION_FALLBACK_THRESHOLD,
                     "translated_query_score_weight": RAG_TRANSLATED_QUERY_SCORE_WEIGHT,
                     "fewshot_examples_used": len(fewshot_examples),
+                    "image_sources": len(image_top_pairs),
                     "table_prelocalized": (
                         has_pretranslated_table_content(related_table, message_language) if related_table else False
                     ),

@@ -1,5 +1,5 @@
 import uuid
-from django.db import models
+from django.db import connection, models
 
 
 class Category(models.Model):
@@ -153,6 +153,52 @@ class NormTableCell(models.Model):
         return f"{self.row} col {self.col_index}"
 
 
+class NormImage(models.Model):
+    """
+    Hujjat ichidagi rasm (img src)
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    document = models.ForeignKey(Document, on_delete=models.CASCADE, related_name="images")
+    chapter = models.ForeignKey(
+        Chapter, on_delete=models.SET_NULL, null=True, blank=True, related_name="images"
+    )
+    section_title = models.CharField(max_length=500, blank=True, null=True, db_index=True)
+    appendix_number = models.CharField(max_length=30, blank=True, null=True, db_index=True)
+    title = models.CharField(max_length=500, blank=True, null=True)
+    html_anchor = models.CharField(max_length=100, blank=True, null=True, db_index=True)
+    image_url = models.URLField(max_length=1000)
+    local_path = models.CharField(max_length=500, blank=True, default="")
+    context_text = models.TextField(blank=True, default="")
+    ocr_text = models.TextField(blank=True, default="")
+    order = models.PositiveIntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ("document", "order")
+
+    def __str__(self):
+        return f"{self.document.code} - image {self.order}"
+
+
+class ImageEmbedding(models.Model):
+    """
+    Rasm bo'yicha embedding metadata va vector
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    image = models.OneToOneField(NormImage, on_delete=models.CASCADE, related_name="embedding")
+
+    embedding_model = models.CharField(max_length=100)
+    vector = models.JSONField()
+    token_count = models.PositiveIntegerField(default=0)
+
+    shnq_code = models.CharField(max_length=100)
+    chapter_title = models.CharField(max_length=500, blank=True, null=True)
+    appendix_number = models.CharField(max_length=30, blank=True, null=True)
+    image_url = models.URLField(max_length=1000)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
 class QuestionAnswer(models.Model):
     """
     RAG savol-javob logi
@@ -162,3 +208,19 @@ class QuestionAnswer(models.Model):
     answer = models.TextField()
     top_clause_ids = models.JSONField()
     created_at = models.DateTimeField(auto_now_add=True)
+
+
+def ensure_runtime_tables():
+    """
+    Migrations ishlatilmagan loyihalarda yangi jadvallarni runtime'da yaratish uchun.
+    """
+    existing_tables = set(connection.introspection.table_names())
+    models_to_ensure = [NormImage, ImageEmbedding]
+
+    with connection.schema_editor() as schema_editor:
+        for model_cls in models_to_ensure:
+            table_name = model_cls._meta.db_table
+            if table_name in existing_tables:
+                continue
+            schema_editor.create_model(model_cls)
+            existing_tables.add(table_name)

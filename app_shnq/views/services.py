@@ -9,6 +9,24 @@ from .constants import *
 # cache state local to this module to avoid NameError at runtime.
 _EMBED_CACHE_MODEL = None
 _EMBED_CACHE_DATA = None
+_IMAGE_EMBED_CACHE_MODEL = None
+_IMAGE_EMBED_CACHE_DATA = None
+
+IMAGE_SOURCE_MARKER = "[image]"
+IMAGE_URL_RE = re.compile(r"\burl:\s*(https?://\S+)", re.IGNORECASE)
+IMAGE_QUERY_HINTS = {
+    "rasm",
+    "image",
+    "belgi",
+    "belgilar",
+    "piktogramma",
+    "piktogrammalar",
+    "ikonka",
+    "icon",
+    "sxema",
+    "diagramma",
+}
+
 
 def _normalize_text(text: str) -> str:
     lowered = unicodedata.normalize("NFKC", (text or "")).strip().lower()
@@ -21,6 +39,53 @@ def _normalize_text(text: str) -> str:
     )
     lowered = re.sub(r"\s+", " ", lowered)
     return lowered
+
+
+def _is_image_clause_text(text: str) -> bool:
+    return _normalize_text(text).startswith(IMAGE_SOURCE_MARKER)
+
+
+def _extract_image_url_from_text(text: str):
+    if not text:
+        return None
+    match = IMAGE_URL_RE.search(text)
+    if not match:
+        return None
+    return match.group(1).rstrip(").,;")
+
+
+def _format_clause_text_for_context(text: str) -> str:
+    value = (text or "").strip()
+    if not value:
+        return value
+    if not _is_image_clause_text(value):
+        return value
+    formatted = value.replace("[IMAGE]", "Rasm:")
+    return re.sub(r"\s*\|\s*", " | ", formatted)
+
+
+def _image_text_for_context(image) -> str:
+    parts = []
+    if image.title:
+        parts.append(image.title)
+    if image.context_text:
+        parts.append(image.context_text)
+    if image.ocr_text:
+        parts.append(image.ocr_text)
+    if image.appendix_number:
+        parts.append(f"{image.appendix_number}-ilova")
+    parts.append(f"URL: {image.image_url}")
+    return " | ".join([p for p in parts if p])
+
+
+def _query_terms_indicate_image(terms) -> bool:
+    if not terms:
+        return False
+    for term in terms:
+        for hint in IMAGE_QUERY_HINTS:
+            if term == hint or term.startswith(hint):
+                return True
+    return False
 
 
 def _is_greeting(text: str) -> bool:
@@ -582,24 +647,32 @@ def _pick_related_table_from_rag(message: str, top_pairs):
 
 def _ensure_embeddings():
     global _EMBED_CACHE_MODEL, _EMBED_CACHE_DATA
+    global _IMAGE_EMBED_CACHE_MODEL, _IMAGE_EMBED_CACHE_DATA
 
-    total = Clause.objects.count()
-    if total == 0:
-        return
-    existing = ClauseEmbedding.objects.filter(embedding_model=EMBEDDING_MODEL).count()
+    ensure_runtime_tables()
 
-    needs_upsert = existing < total
+    total_clauses = Clause.objects.count()
+    total_images = NormImage.objects.count()
+    existing_clauses = ClauseEmbedding.objects.filter(embedding_model=EMBEDDING_MODEL).count()
+    existing_images = ImageEmbedding.objects.filter(embedding_model=EMBEDDING_MODEL).count()
+
+    needs_upsert_clauses = total_clauses > 0 and existing_clauses < total_clauses
+    needs_upsert_images = total_images > 0 and existing_images < total_images
+
+    needs_upsert = needs_upsert_clauses or needs_upsert_images
     if USE_QDRANT:
         qdrant_total = qdrant_count_points()
-        if qdrant_total < existing:
+        if qdrant_total < existing_clauses:
             needs_upsert = True
 
     if not needs_upsert:
         return
 
-    upsert_clause_embeddings(embedding_model=EMBEDDING_MODEL, force_update=False)
+    upsert_all_embeddings(embedding_model=EMBEDDING_MODEL, force_update=False)
     _EMBED_CACHE_MODEL = None
     _EMBED_CACHE_DATA = None
+    _IMAGE_EMBED_CACHE_MODEL = None
+    _IMAGE_EMBED_CACHE_DATA = None
 
 
 def _prepare_embedding_runtime_fields(embeddings):
@@ -616,6 +689,7 @@ def _get_embeddings_for_query():
     if EMBED_CACHE_ENABLED and _EMBED_CACHE_MODEL == EMBEDDING_MODEL and _EMBED_CACHE_DATA is not None:
         return _EMBED_CACHE_DATA
 
+    ensure_runtime_tables()
     data = list(
         ClauseEmbedding.objects.select_related("clause", "clause__document", "clause__chapter").filter(
             embedding_model=EMBEDDING_MODEL
@@ -628,6 +702,48 @@ def _get_embeddings_for_query():
     return data
 
 
+def _prepare_image_embedding_runtime_fields(embeddings):
+    for emb in embeddings:
+        image = emb.image
+        emb._norm_text = _normalize_text(
+            " ".join(
+                [
+                    image.title or "",
+                    image.context_text or "",
+                    image.ocr_text or "",
+                    emb.chapter_title or "",
+                    emb.shnq_code or "",
+                    emb.appendix_number or "",
+                ]
+            )
+        )
+        emb._norm_code = _normalize_text(emb.shnq_code or "")
+    return embeddings
+
+
+def _get_image_embeddings_for_query():
+    global _IMAGE_EMBED_CACHE_MODEL, _IMAGE_EMBED_CACHE_DATA
+
+    if (
+        EMBED_CACHE_ENABLED
+        and _IMAGE_EMBED_CACHE_MODEL == EMBEDDING_MODEL
+        and _IMAGE_EMBED_CACHE_DATA is not None
+    ):
+        return _IMAGE_EMBED_CACHE_DATA
+
+    ensure_runtime_tables()
+    data = list(
+        ImageEmbedding.objects.select_related("image", "image__document", "image__chapter").filter(
+            embedding_model=EMBEDDING_MODEL
+        )
+    )
+    data = _prepare_image_embedding_runtime_fields(data)
+    if EMBED_CACHE_ENABLED:
+        _IMAGE_EMBED_CACHE_MODEL = EMBEDDING_MODEL
+        _IMAGE_EMBED_CACHE_DATA = data
+    return data
+
+
 def _score_with_qdrant(query_vec, query_terms, requested_doc_code=None):
     if not query_vec:
         return []
@@ -636,7 +752,12 @@ def _score_with_qdrant(query_vec, query_terms, requested_doc_code=None):
     if not hits:
         return []
 
-    ids = [str(hit.id) for hit in hits]
+    ids = []
+    for hit in hits:
+        hit_id = str(hit.id)
+        if hit_id.startswith("clause:"):
+            hit_id = hit_id.split(":", 1)[1]
+        ids.append(hit_id)
     embeddings = ClauseEmbedding.objects.select_related("clause", "clause__document", "clause__chapter").filter(
         clause_id__in=ids
     )
@@ -644,7 +765,10 @@ def _score_with_qdrant(query_vec, query_terms, requested_doc_code=None):
 
     scored = []
     for hit in hits:
-        emb = emb_map.get(str(hit.id))
+        hit_id = str(hit.id)
+        if hit_id.startswith("clause:"):
+            hit_id = hit_id.split(":", 1)[1]
+        emb = emb_map.get(hit_id)
         if not emb or hit.score is None:
             continue
         semantic = float(hit.score)
@@ -721,6 +845,11 @@ def _keyword_score(terms, emb: ClauseEmbedding) -> float:
     clause_text = getattr(emb, "_norm_clause", None) or _normalize_text(emb.clause.text)
     chapter = getattr(emb, "_norm_chapter", None) or _normalize_text(emb.chapter_title or "")
     shnq_code = getattr(emb, "_norm_code", None) or _normalize_text(emb.shnq_code or "")
+    is_image_clause = _is_image_clause_text(emb.clause.text or "")
+    asks_image = _query_terms_indicate_image(terms)
+    if is_image_clause and not asks_image:
+        # Rasm bloklari oddiy matnli norma qidiruvini siqib chiqarmasin.
+        return 0.0
     hits = 0
     for term in terms:
         if term in clause_text:
@@ -728,7 +857,72 @@ def _keyword_score(terms, emb: ClauseEmbedding) -> float:
             continue
         if term in chapter or term in shnq_code:
             hits += 1
+    score = hits / max(len(terms), 1)
+    if is_image_clause and asks_image:
+        score = min(1.0, score + 0.25)
+    return score
+
+
+def _image_keyword_score(terms, emb: ImageEmbedding) -> float:
+    if not terms:
+        return 0.0
+    haystack = getattr(emb, "_norm_text", None) or _normalize_text(
+        " ".join(
+            [
+                emb.image.title or "",
+                emb.image.context_text or "",
+                emb.image.ocr_text or "",
+                emb.chapter_title or "",
+                emb.shnq_code or "",
+                emb.appendix_number or "",
+            ]
+        )
+    )
+    hits = sum(1 for term in terms if term in haystack)
     return hits / max(len(terms), 1)
+
+
+def _filter_image_embeddings_by_doc_code(embeddings, doc_code: str):
+    target = _normalize_doc_code(doc_code)
+    filtered = []
+    for emb in embeddings:
+        current = _normalize_doc_code(emb.shnq_code or "")
+        if not current:
+            continue
+        if current == target or current.startswith(target):
+            filtered.append(emb)
+    return filtered
+
+
+def _search_image_embeddings(message: str, requested_doc_code: str | None = None, limit: int | None = None):
+    terms = _extract_query_terms(message)
+    if not _query_terms_indicate_image(terms):
+        return []
+    try:
+        query_vec = embed_text(message, model=EMBEDDING_MODEL)
+    except Exception:
+        return []
+    if not query_vec:
+        return []
+
+    embeddings = _get_image_embeddings_for_query()
+    if requested_doc_code:
+        embeddings = _filter_image_embeddings_by_doc_code(embeddings, requested_doc_code)
+
+    scored = []
+    for emb in embeddings:
+        if not emb.vector:
+            continue
+        semantic = cosine_similarity(query_vec, emb.vector)
+        keyword = _image_keyword_score(terms, emb)
+        score = semantic + (KEYWORD_WEIGHT * keyword)
+        if score < RAG_IMAGE_MIN_SCORE:
+            continue
+        scored.append((score, emb, semantic, keyword))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    max_items = limit or RAG_IMAGE_TOP_K
+    return scored[: max_items]
 
 
 def _candidate_documents_from_scored(scored, best_score):
@@ -925,7 +1119,7 @@ def _pick_fewshot_examples(question: str, limit: int = 3):
     return [item for _, item in ranked[: max(limit, 1)]]
 
 
-def _build_rag_prompt(question, sources, response_language="uz", fewshot_examples=None):
+def _build_rag_prompt(question, sources, response_language="uz", fewshot_examples=None, image_sources=None):
     context_chunks = []
     for idx, emb in enumerate(sources, 1):
         clause = emb.clause
@@ -935,9 +1129,24 @@ def _build_rag_prompt(question, sources, response_language="uz", fewshot_example
             f"Hujjat: {emb.shnq_code}",
             f"Bob: {emb.chapter_title or 'Nomalum bob'}",
             f"Band: {emb.clause_number or '-'}",
-            f"Matn: {clause.text}",
+            f"Matn: {_format_clause_text_for_context(clause.text)}",
         ]
         context_chunks.append("\n".join(lines))
+
+    if image_sources:
+        base_idx = len(context_chunks)
+        for offset, image_emb in enumerate(image_sources, 1):
+            image = image_emb.image
+            header = f"Manba {base_idx + offset} (Rasm)"
+            lines = [
+                header,
+                f"Hujjat: {image_emb.shnq_code}",
+                f"Bob: {image_emb.chapter_title or 'Nomalum bob'}",
+                f"Ilova: {image_emb.appendix_number or '-'}",
+                f"Rasm URL: {image.image_url}",
+                f"Matn: {_image_text_for_context(image)}",
+            ]
+            context_chunks.append("\n".join(lines))
 
     context = "\n\n".join(context_chunks)
     fewshot_block = ""
