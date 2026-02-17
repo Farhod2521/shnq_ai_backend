@@ -26,6 +26,7 @@ from .constants import (
     KEYWORD_WEIGHT,
     MIN_SCORE,
     RAG_FINAL_MAX_TOKENS,
+    RAG_IMAGE_TOP_K,
     RAG_MULTILINGUAL_NATIVE_FIRST,
     RAG_MULTILINGUAL_TRANSLATE_FALLBACK,
     RAG_TRANSLATED_QUERY_SCORE_WEIGHT,
@@ -59,6 +60,7 @@ from .services import (
     _is_table_request,
     _keyword_score,
     _llm_rerank,
+    _linked_image_embeddings_from_clause_refs,
     _needs_clarification,
     _pick_related_table_from_rag,
     _pick_fewshot_examples,
@@ -585,7 +587,16 @@ class ChatAPIView(APIView):
         reranked = _llm_rerank(original_message, candidate_pairs)
         top_pairs = reranked[:5]
         top = [item for _, item, *_rest in top_pairs]
-        image_top_pairs = image_pairs[:3]
+        image_limit = max(1, RAG_IMAGE_TOP_K)
+        image_top_pairs = image_pairs[:image_limit]
+        linked_image_pairs = _linked_image_embeddings_from_clause_refs(
+            top_pairs,
+            original_message,
+            requested_doc_code=requested_doc_code,
+        )
+        if linked_image_pairs:
+            image_limit = max(image_limit, len(linked_image_pairs))
+            image_top_pairs = _merge_image_candidates(image_top_pairs, linked_image_pairs)[:image_limit]
 
         if not top and not image_top_pairs:
             clarification = _needs_clarification(search_message)

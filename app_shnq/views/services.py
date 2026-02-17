@@ -26,6 +26,13 @@ IMAGE_QUERY_HINTS = {
     "sxema",
     "diagramma",
 }
+FIGURE_NUMBER_RE = re.compile(
+    r"(?:\b(\d+)\s*-\s*rasm(?:ga|da|dan|ni|ning|lar|larga|larda|lardan)?\b|"
+    r"\b(\d+)\s*rasm(?:ga|da|dan|ni|ning|lar|larga|larda|lardan)?\b)",
+    re.IGNORECASE,
+)
+FIGURE_PREFIX_RE = re.compile(r"\b(\d+)\s*-\s*(?=,|\s*va\s+\d+\s*-|\s*hamda\s+\d+\s*-)", re.IGNORECASE)
+RAG_IMAGE_APPENDIX_TOP_K = int(os.getenv("RAG_IMAGE_APPENDIX_TOP_K", "12"))
 
 
 def _normalize_text(text: str) -> str:
@@ -52,6 +59,34 @@ def _extract_image_url_from_text(text: str):
     if not match:
         return None
     return match.group(1).rstrip(").,;")
+
+
+def _extract_figure_numbers(text: str):
+    value = _normalize_text(text)
+    if not value:
+        return []
+    numbers = []
+    for match in FIGURE_PREFIX_RE.finditer(value):
+        try:
+            numbers.append(int(match.group(1)))
+        except Exception:
+            continue
+    for match in FIGURE_NUMBER_RE.finditer(value):
+        raw = match.group(1) or match.group(2)
+        if not raw:
+            continue
+        try:
+            numbers.append(int(raw))
+        except Exception:
+            continue
+    unique = []
+    seen = set()
+    for num in numbers:
+        if num in seen:
+            continue
+        seen.add(num)
+        unique.append(num)
+    return unique
 
 
 def _format_clause_text_for_context(text: str) -> str:
@@ -86,6 +121,47 @@ def _query_terms_indicate_image(terms) -> bool:
             if term == hint or term.startswith(hint):
                 return True
     return False
+
+
+def _message_indicates_image(text: str) -> bool:
+    normalized = _normalize_text(text)
+    if not normalized:
+        return False
+    return any(hint in normalized for hint in IMAGE_QUERY_HINTS)
+
+
+def _text_term_overlap_score(text: str, terms) -> float:
+    if not terms:
+        return 0.0
+    haystack = _normalize_text(text)
+    if not haystack:
+        return 0.0
+    hits = sum(1 for term in terms if term in haystack)
+    return hits / max(len(terms), 1)
+
+
+def _best_image_segment_match_score(emb: ImageEmbedding, normalized_message: str, terms) -> float:
+    image = emb.image
+    segments = []
+    for value in [image.title, image.section_title, image.context_text, image.ocr_text]:
+        if not value:
+            continue
+        parts = [p.strip() for p in str(value).split("|") if p.strip()]
+        if not parts:
+            parts = [str(value)]
+        segments.extend(parts)
+    best = 0.0
+    for seg in segments:
+        norm_seg = _normalize_text(seg)
+        if not norm_seg:
+            continue
+        score = _text_term_overlap_score(norm_seg, terms)
+        if normalized_message and len(normalized_message) >= 12:
+            if normalized_message in norm_seg or norm_seg in normalized_message:
+                score = max(score, 1.0)
+        if score > best:
+            best = score
+    return best
 
 
 def _is_greeting(text: str) -> bool:
@@ -896,8 +972,59 @@ def _filter_image_embeddings_by_doc_code(embeddings, doc_code: str):
 
 def _search_image_embeddings(message: str, requested_doc_code: str | None = None, limit: int | None = None):
     terms = _extract_query_terms(message)
-    if not _query_terms_indicate_image(terms):
+    if not (_query_terms_indicate_image(terms) or _message_indicates_image(message)):
         return []
+    normalized_message = _normalize_text(message)
+
+    # Agar foydalanuvchi matni rasm kontekstida aniq ibora sifatida uchrasa,
+    # faqat shu(lar)ni qaytaramiz (masalan: aniq belgi nomi/sarlavha).
+    if len(normalized_message) >= 12:
+        phrase_matched = []
+        base_embeddings = _get_image_embeddings_for_query()
+        if requested_doc_code:
+            base_embeddings = _filter_image_embeddings_by_doc_code(base_embeddings, requested_doc_code)
+        for emb in base_embeddings:
+            haystack = _normalize_text(
+                " ".join(
+                    [
+                        emb.image.title or "",
+                        emb.image.section_title or "",
+                        emb.image.context_text or "",
+                        emb.image.ocr_text or "",
+                    ]
+                )
+            )
+            if normalized_message in haystack:
+                phrase_matched.append(emb)
+        if phrase_matched:
+            phrase_ranked = sorted(
+                phrase_matched,
+                key=lambda e: _text_term_overlap_score(
+                    f"{e.image.title or ''} {e.image.section_title or ''} {e.image.context_text or ''} {e.image.ocr_text or ''}",
+                    terms,
+                ),
+                reverse=True,
+            )
+            max_items = limit or RAG_IMAGE_TOP_K
+            return [(1.0 - (idx * 0.001), emb, 1.0, 1.0) for idx, emb in enumerate(phrase_ranked[:max_items])]
+
+        # Foydalanuvchi aniq sarlavha/bo'lak so'ragan bo'lsa, bitta eng mos rasmni tanlaymiz.
+        segment_ranked = sorted(
+            [
+                (
+                    _best_image_segment_match_score(emb, normalized_message, terms),
+                    emb,
+                )
+                for emb in base_embeddings
+            ],
+            key=lambda x: x[0],
+            reverse=True,
+        )
+        if segment_ranked and segment_ranked[0][0] >= 0.72:
+            second = segment_ranked[1][0] if len(segment_ranked) > 1 else 0.0
+            if (segment_ranked[0][0] - second) >= 0.12:
+                best_emb = segment_ranked[0][1]
+                return [(1.0, best_emb, 1.0, 1.0)]
     try:
         query_vec = embed_text(message, model=EMBEDDING_MODEL)
     except Exception:
@@ -922,7 +1049,131 @@ def _search_image_embeddings(message: str, requested_doc_code: str | None = None
 
     scored.sort(key=lambda x: x[0], reverse=True)
     max_items = limit or RAG_IMAGE_TOP_K
-    return scored[: max_items]
+    if scored:
+        return scored[: max_items]
+
+    # Embedding skori past bo'lib qolgan hollarda matn mosligi bo'yicha fallback.
+    fallback = []
+    for emb in embeddings:
+        keyword = _image_keyword_score(terms, emb)
+        if keyword <= 0:
+            continue
+        hit_count = int(round(keyword * max(len(terms), 1)))
+        if hit_count < 2 and keyword < 0.25:
+            continue
+        score = KEYWORD_WEIGHT * keyword
+        fallback.append((score, emb, 0.0, keyword))
+
+    fallback.sort(key=lambda x: (x[3], x[0]), reverse=True)
+    return fallback[: max_items]
+
+
+def _linked_image_embeddings_from_clause_refs(top_pairs, message: str, requested_doc_code: str | None = None):
+    if not top_pairs:
+        return []
+
+    target_doc = requested_doc_code or (top_pairs[0][1].shnq_code if top_pairs and top_pairs[0][1] else None)
+    if not target_doc:
+        return []
+    target_doc_norm = _normalize_doc_code(target_doc)
+
+    appendix_number = _extract_appendix_number(message)
+    query_figure_numbers = _extract_figure_numbers(message)
+    figure_numbers = list(query_figure_numbers)
+    query_terms = _extract_query_terms(message)
+
+    for _score, emb, _semantic, _keyword in top_pairs[:3]:
+        clause_text = emb.clause.text or ""
+        if not appendix_number:
+            appendix_number = _extract_appendix_number(clause_text)
+        figure_numbers.extend(_extract_figure_numbers(clause_text))
+
+    unique_figure_numbers = []
+    seen_figures = set()
+    for num in figure_numbers:
+        if num in seen_figures:
+            continue
+        seen_figures.add(num)
+        unique_figure_numbers.append(num)
+
+    if not appendix_number and not unique_figure_numbers:
+        return []
+
+    image_candidates = [
+        image
+        for image in NormImage.objects.select_related("document").order_by("order")
+        if _normalize_doc_code(image.document.code).startswith(target_doc_norm)
+    ]
+    if appendix_number:
+        appendix_str = str(appendix_number)
+        image_candidates = [img for img in image_candidates if str(img.appendix_number or "") == appendix_str]
+    if not image_candidates:
+        return []
+
+    picked_images = []
+    full_appendix_requested = False
+    if appendix_number and not query_figure_numbers and query_terms:
+        # Savol sarlavha/bo'limga qaratilgan bo'lsa (masalan: "Himoya to'rlarining turlari"),
+        # ilovadagi barcha rasmlarni qaytaramiz.
+        heading_score = _text_term_overlap_score(
+            " ".join(
+                [
+                    image_candidates[0].title or "",
+                    image_candidates[0].section_title or "",
+                    image_candidates[0].context_text or "",
+                ]
+            ),
+            query_terms,
+        )
+        if heading_score >= 0.34 or "turlari" in _normalize_text(message):
+            full_appendix_requested = True
+
+    if full_appendix_requested:
+        picked_images = image_candidates[:RAG_IMAGE_APPENDIX_TOP_K]
+    elif appendix_number and unique_figure_numbers:
+        for num in unique_figure_numbers:
+            idx = num - 1
+            if 0 <= idx < len(image_candidates):
+                picked_images.append(image_candidates[idx])
+
+    if not picked_images and unique_figure_numbers:
+        for img in image_candidates:
+            haystack = _normalize_text(" ".join([img.title or "", img.context_text or "", img.ocr_text or ""]))
+            if any(f"{num}-rasm" in haystack or f"{num} rasm" in haystack for num in unique_figure_numbers):
+                picked_images.append(img)
+
+    if not picked_images:
+        return []
+
+    # first-match tartibida uniq va limit
+    uniq_images = []
+    seen_ids = set()
+    for img in picked_images:
+        if str(img.id) in seen_ids:
+            continue
+        seen_ids.add(str(img.id))
+        uniq_images.append(img)
+        max_pick = RAG_IMAGE_APPENDIX_TOP_K if full_appendix_requested else RAG_IMAGE_TOP_K
+        if len(uniq_images) >= max_pick:
+            break
+    if not uniq_images:
+        return []
+
+    emb_qs = ImageEmbedding.objects.select_related("image", "image__document", "image__chapter").filter(
+        image_id__in=[img.id for img in uniq_images],
+        embedding_model=EMBEDDING_MODEL,
+    )
+    emb_map = {str(item.image_id): item for item in emb_qs}
+
+    base_score = top_pairs[0][0] if top_pairs else RAG_IMAGE_MIN_SCORE
+    results = []
+    for idx, img in enumerate(uniq_images):
+        emb = emb_map.get(str(img.id))
+        if not emb:
+            continue
+        linked_score = max(RAG_IMAGE_MIN_SCORE, min(1.0, base_score - (idx * 0.005)))
+        results.append((linked_score, emb, linked_score, 1.0))
+    return results
 
 
 def _candidate_documents_from_scored(scored, best_score):
