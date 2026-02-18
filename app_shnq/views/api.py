@@ -737,7 +737,7 @@ class ChatAPIView(APIView):
                 answer = (table_row_top_pairs[0][1].search_text or "").strip() or "Mos jadval satri topildi."
             else:
                 answer = "Mos band topilmadi."
-        answer = _cleanup_answer_format(answer)
+        answer = _cleanup_answer_format(answer, response_language=message_language)
         sources = []
         for score, emb, semantic, keyword in top_pairs:
             sources.append(_build_clause_source(score, emb, semantic, keyword))

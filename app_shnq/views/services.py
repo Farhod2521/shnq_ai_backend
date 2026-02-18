@@ -1656,14 +1656,15 @@ def _build_rag_prompt(
             )
         fewshot_block = "\n\nJavob uslubi namunalari:\n" + "\n\n".join(samples)
     language_label = {"uz": "o'zbek", "en": "ingliz", "ru": "rus", "ko": "koreys"}.get(response_language, "o'zbek")
+    detailed_label, short_label = _answer_labels(response_language)
     system = (
         "Siz SHNQ AI'siz. Faqat SHNQ/QMQ va qurilish normalari hujjatlariga tayangan holda javob bering. "
         "Hech qachon normani o'ylab topmang, talqin qilmang, faqat kontekstdagi faktlarni yozing. "
         "Kontekstda javob bo'lmasa, buni ochiq ayting. "
         f"Javobni {language_label} tilida yozing. "
         "Javob formatida raqamli punktlar ((1), (2), (3), (4)) ishlatmang. "
-        "Javobni 2 qismda bering: avval 'Batafsil:' deb mazmunli va to'liq tushuntiring, "
-        "so'ng 'Qisqa qilib aytganda:' deb xulosa bering. "
+        f"Javobni 2 qismda bering: avval '{detailed_label}:' deb mazmunli va to'liq tushuntiring, "
+        f"so'ng '{short_label}:' deb xulosa bering. "
         "Ikkinchi qism majburiy: aynan bitta qisqa jumla bo'lsin (8-12 so'z), "
         "ortiqcha izoh yoki qo'shimcha paragraf yozmang."
     )
@@ -1671,10 +1672,40 @@ def _build_rag_prompt(
     return system, prompt
 
 
-def _make_short_summary(text: str, max_words: int = 12) -> str:
+def _answer_labels(response_language: str = "uz"):
+    labels = {
+        "uz": ("Batafsil", "Qisqa qilib aytganda"),
+        "en": ("Details", "In short"),
+        "ru": ("Подробно", "Кратко"),
+        "ko": ("상세", "요약"),
+    }
+    return labels.get((response_language or "uz").lower(), labels["uz"])
+
+
+def _empty_answer_text(response_language: str = "uz") -> str:
+    messages = {
+        "uz": "Javob aniq emas.",
+        "en": "The answer is unclear.",
+        "ru": "Ответ неясен.",
+        "ko": "답변이 명확하지 않습니다.",
+    }
+    return messages.get((response_language or "uz").lower(), messages["uz"])
+
+
+def _no_context_text(response_language: str = "uz") -> str:
+    messages = {
+        "uz": "Kontekstda aniq javob topilmadi.",
+        "en": "No clear answer was found in the context.",
+        "ru": "В контексте не найден точный ответ.",
+        "ko": "컨텍스트에서 명확한 답을 찾지 못했습니다.",
+    }
+    return messages.get((response_language or "uz").lower(), messages["uz"])
+
+
+def _make_short_summary(text: str, max_words: int = 12, response_language: str = "uz") -> str:
     value = re.sub(r"\s+", " ", (text or "")).strip()
     if not value:
-        return "Javob aniq emas."
+        return _empty_answer_text(response_language)
     value = re.sub(r"^\s*\d+\s*[.)-]\s*", "", value).strip()
     # Birinchi gapni olamiz.
     sentence = re.split(r"[.!?](?:\s|$)", value, maxsplit=1)[0].strip()
@@ -1685,16 +1716,18 @@ def _make_short_summary(text: str, max_words: int = 12) -> str:
         sentence = " ".join(words[:max_words]).strip()
     sentence = sentence.rstrip(" ,;:-")
     if not sentence:
-        sentence = "Javob aniq emas"
+        sentence = _empty_answer_text(response_language).rstrip(".!?")
     if not sentence.endswith("."):
         sentence += "."
     return sentence
 
 
-def _cleanup_answer_format(answer: str) -> str:
+def _cleanup_answer_format(answer: str, response_language: str = "uz") -> str:
     text = (answer or "").strip()
     if not text:
         return text
+
+    detailed_label, short_label = _answer_labels(response_language)
 
     # LLM eski promptga ko'ra (1)..(4) qaytarsa, 1-2 ni olib tashlab, 3-4 ni kerakli ko'rinishga o'tkazamiz.
     text = re.sub(r"\(\s*1\s*\)\s*[^.\n:]*[:.]?\s*.*?(?:\n|$)", "", text, flags=re.IGNORECASE)
@@ -1702,6 +1735,12 @@ def _cleanup_answer_format(answer: str) -> str:
     text = re.sub(r"\(\s*3\s*\)\s*[^.\n:]*[:.]?\s*", "Batafsil: ", text, flags=re.IGNORECASE)
     text = re.sub(r"\(\s*4\s*\)\s*[^.\n:]*[:.]?\s*", "\nQisqa qilib aytganda: ", text, flags=re.IGNORECASE)
     # Sarlavha yozilishidagi mayda farqlarni normallashtiramiz.
+    text = re.sub(r"details?\s*:", "Batafsil:", text, flags=re.IGNORECASE)
+    text = re.sub(r"in\s*short\s*:", "Qisqa qilib aytganda:", text, flags=re.IGNORECASE)
+    text = re.sub(r"подробно\s*:", "Batafsil:", text, flags=re.IGNORECASE)
+    text = re.sub(r"кратко\s*:", "Qisqa qilib aytganda:", text, flags=re.IGNORECASE)
+    text = re.sub(r"상세\s*:", "Batafsil:", text)
+    text = re.sub(r"요약\s*:", "Qisqa qilib aytganda:", text)
     text = re.sub(r"qisqa\s+qilib\s+aytganda\s*:", "Qisqa qilib aytganda:", text, flags=re.IGNORECASE)
     text = re.sub(r"batafsil\s*:", "Batafsil:", text, flags=re.IGNORECASE)
     # Javob matnida manba qatori ko'rsatilmasin (manba alohida `sources` da mavjud).
@@ -1724,14 +1763,14 @@ def _cleanup_answer_format(answer: str) -> str:
     short_line = re.split(r"[\n\r]+", short_raw, maxsplit=1)[0].strip() if short_raw else ""
     short_words = short_line.split()
     if (not short_line) or len(short_words) < 3 or len(short_words) > 16:
-        short_line = _make_short_summary(detailed, max_words=12)
+        short_line = _make_short_summary(detailed, max_words=12, response_language=response_language)
     else:
-        short_line = _make_short_summary(short_line, max_words=12)
+        short_line = _make_short_summary(short_line, max_words=12, response_language=response_language)
 
     detailed = re.sub(r"\s+", " ", detailed).strip()
     if not detailed:
-        detailed = "Kontekstda aniq javob topilmadi."
-    return f"Batafsil: {detailed}\nQisqa qilib aytganda: {short_line}"
+        detailed = _no_context_text(response_language)
+    return f"{detailed_label}: {detailed}\n{short_label}: {short_line}"
 
 
 
