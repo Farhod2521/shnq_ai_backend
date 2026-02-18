@@ -1,5 +1,7 @@
 import os
+import time
 
+from django.db import OperationalError
 from django.db import connection
 
 from .deepseek_client import translate_html_preserving_tags, translate_text
@@ -7,6 +9,8 @@ from .deepseek_client import translate_html_preserving_tags, translate_text
 
 TABLE_I18N_LANGS = ("ru", "en", "ko")
 TABLE_PRETRANSLATE_MODEL = os.getenv("TABLE_PRETRANSLATE_MODEL", "gpt-4o-mini")
+SQLITE_LOCK_MAX_RETRIES = int(os.getenv("SQLITE_LOCK_MAX_RETRIES", "12"))
+SQLITE_LOCK_RETRY_BASE_SEC = float(os.getenv("SQLITE_LOCK_RETRY_BASE_SEC", "0.25"))
 
 I18N_COLUMNS = {
     "raw_html_ru": "TEXT",
@@ -26,6 +30,26 @@ def ensure_normtable_i18n_columns():
             if col_name in cols:
                 continue
             cursor.execute(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type} NOT NULL DEFAULT ''")
+
+
+def _save_table_with_retry(table, update_fields):
+    for attempt in range(SQLITE_LOCK_MAX_RETRIES):
+        try:
+            table.save(update_fields=update_fields)
+            return
+        except OperationalError as exc:
+            msg = str(exc).lower()
+            if "database is locked" not in msg:
+                raise
+            if attempt >= SQLITE_LOCK_MAX_RETRIES - 1:
+                raise
+            delay = SQLITE_LOCK_RETRY_BASE_SEC * (2 ** attempt)
+            print(
+                f"[sqlite-lock] pretranslate save {table.document.code} {table.table_number}: "
+                f"retry {attempt + 1}/{SQLITE_LOCK_MAX_RETRIES} in {delay:.2f}s",
+                flush=True,
+            )
+            time.sleep(delay)
 
 
 def get_pretranslated_table_content(table, language: str):
@@ -87,7 +111,7 @@ def pretranslate_table_fields(table, force: bool = False):
             changed.append(md_field)
 
     if changed:
-        table.save(update_fields=sorted(set(changed)))
+        _save_table_with_retry(table, update_fields=sorted(set(changed)))
     return table
 
 

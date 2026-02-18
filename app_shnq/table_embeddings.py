@@ -1,11 +1,38 @@
+import os
 import re
+import time
+
+from django.db import OperationalError
 
 from .deepseek_client import DEFAULT_EMBED_MODEL, embed_text as deepseek_embed_text
 from .models import NormTableRow, TableRowEmbedding, ensure_runtime_tables
 
 
+TABLE_ROW_PROGRESS_EVERY = int(os.getenv("TABLE_ROW_PROGRESS_EVERY", "100"))
+SQLITE_LOCK_MAX_RETRIES = int(os.getenv("SQLITE_LOCK_MAX_RETRIES", "12"))
+SQLITE_LOCK_RETRY_BASE_SEC = float(os.getenv("SQLITE_LOCK_RETRY_BASE_SEC", "0.25"))
+
+
 def _clean_text(value: str) -> str:
     return re.sub(r"\s+", " ", (value or "")).strip()
+
+
+def _retry_on_sqlite_lock(action, fn):
+    for attempt in range(SQLITE_LOCK_MAX_RETRIES):
+        try:
+            return fn()
+        except OperationalError as exc:
+            msg = str(exc).lower()
+            if "database is locked" not in msg:
+                raise
+            if attempt >= SQLITE_LOCK_MAX_RETRIES - 1:
+                raise
+            delay = SQLITE_LOCK_RETRY_BASE_SEC * (2 ** attempt)
+            print(
+                f"[sqlite-lock] {action}: retry {attempt + 1}/{SQLITE_LOCK_MAX_RETRIES} in {delay:.2f}s",
+                flush=True,
+            )
+            time.sleep(delay)
 
 
 def _extract_table_headers(table):
@@ -104,7 +131,8 @@ def upsert_table_row_embeddings(
     skipped = 0
 
     header_cache = {}
-    for row in qs.iterator(chunk_size=200):
+    total = qs.count()
+    for idx, row in enumerate(qs.iterator(chunk_size=200), start=1):
         cache_key = str(row.table_id)
         headers = header_cache.get(cache_key)
         if headers is None:
@@ -114,9 +142,17 @@ def upsert_table_row_embeddings(
         search_text = build_table_row_search_text(row, headers=headers)
         if not search_text.strip():
             skipped += 1
+            if TABLE_ROW_PROGRESS_EVERY > 0 and (idx == 1 or idx % TABLE_ROW_PROGRESS_EVERY == 0 or idx == total):
+                print(
+                    f"[table_rows {idx}/{total}] created={created} updated={updated} skipped={skipped}",
+                    flush=True,
+                )
             continue
 
-        existing = TableRowEmbedding.objects.filter(row=row).first()
+        existing = _retry_on_sqlite_lock(
+            f"table_row existing lookup {idx}/{total}",
+            lambda: TableRowEmbedding.objects.filter(row=row).first(),
+        )
         if (
             existing
             and not force_update
@@ -125,30 +161,43 @@ def upsert_table_row_embeddings(
             and existing.vector
         ):
             skipped += 1
+            if TABLE_ROW_PROGRESS_EVERY > 0 and (idx == 1 or idx % TABLE_ROW_PROGRESS_EVERY == 0 or idx == total):
+                print(
+                    f"[table_rows {idx}/{total}] created={created} updated={updated} skipped={skipped}",
+                    flush=True,
+                )
             continue
 
         vector = deepseek_embed_text(search_text, model=model_name)
         token_count = len(search_text.split())
         chapter_title = row.table.section_title or (row.table.chapter.title if row.table.chapter else None)
 
-        _, was_created = TableRowEmbedding.objects.update_or_create(
-            row=row,
-            defaults={
-                "embedding_model": model_name,
-                "vector": vector,
-                "token_count": token_count,
-                "shnq_code": row.table.document.code,
-                "chapter_title": chapter_title,
-                "table_number": row.table.table_number,
-                "table_title": row.table.title,
-                "row_index": row.row_index,
-                "search_text": search_text,
-            },
+        _, was_created = _retry_on_sqlite_lock(
+            f"table_row upsert {idx}/{total}",
+            lambda: TableRowEmbedding.objects.update_or_create(
+                row=row,
+                defaults={
+                    "embedding_model": model_name,
+                    "vector": vector,
+                    "token_count": token_count,
+                    "shnq_code": row.table.document.code,
+                    "chapter_title": chapter_title,
+                    "table_number": row.table.table_number,
+                    "table_title": row.table.title,
+                    "row_index": row.row_index,
+                    "search_text": search_text,
+                },
+            ),
         )
         if was_created:
             created += 1
         else:
             updated += 1
+        if TABLE_ROW_PROGRESS_EVERY > 0 and (idx == 1 or idx % TABLE_ROW_PROGRESS_EVERY == 0 or idx == total):
+            print(
+                f"[table_rows {idx}/{total}] created={created} updated={updated} skipped={skipped}",
+                flush=True,
+            )
 
     return {"created": created, "updated": updated, "skipped": skipped}
 

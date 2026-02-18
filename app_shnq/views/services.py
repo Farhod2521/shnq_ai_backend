@@ -1663,10 +1663,32 @@ def _build_rag_prompt(
         f"Javobni {language_label} tilida yozing. "
         "Javob formatida raqamli punktlar ((1), (2), (3), (4)) ishlatmang. "
         "Javobni 2 qismda bering: avval 'Batafsil:' deb mazmunli va to'liq tushuntiring, "
-        "so'ng 'Qisqa qilib aytganda:' deb 1-2 jumlada xulosa bering."
+        "so'ng 'Qisqa qilib aytganda:' deb xulosa bering. "
+        "Ikkinchi qism majburiy: aynan bitta qisqa jumla bo'lsin (8-12 so'z), "
+        "ortiqcha izoh yoki qo'shimcha paragraf yozmang."
     )
     prompt = f"Savol: {question}\n\nKontekst:\n{context}{fewshot_block}\n\nJavob:"
     return system, prompt
+
+
+def _make_short_summary(text: str, max_words: int = 12) -> str:
+    value = re.sub(r"\s+", " ", (text or "")).strip()
+    if not value:
+        return "Javob aniq emas."
+    value = re.sub(r"^\s*\d+\s*[.)-]\s*", "", value).strip()
+    # Birinchi gapni olamiz.
+    sentence = re.split(r"[.!?](?:\s|$)", value, maxsplit=1)[0].strip()
+    if not sentence:
+        sentence = value
+    words = sentence.split()
+    if len(words) > max_words:
+        sentence = " ".join(words[:max_words]).strip()
+    sentence = sentence.rstrip(" ,;:-")
+    if not sentence:
+        sentence = "Javob aniq emas"
+    if not sentence.endswith("."):
+        sentence += "."
+    return sentence
 
 
 def _cleanup_answer_format(answer: str) -> str:
@@ -1679,23 +1701,37 @@ def _cleanup_answer_format(answer: str) -> str:
     text = re.sub(r"\(\s*2\s*\)\s*[^.\n:]*[:.]?\s*.*?(?:\n|$)", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\(\s*3\s*\)\s*[^.\n:]*[:.]?\s*", "Batafsil: ", text, flags=re.IGNORECASE)
     text = re.sub(r"\(\s*4\s*\)\s*[^.\n:]*[:.]?\s*", "\nQisqa qilib aytganda: ", text, flags=re.IGNORECASE)
+    # Sarlavha yozilishidagi mayda farqlarni normallashtiramiz.
+    text = re.sub(r"qisqa\s+qilib\s+aytganda\s*:", "Qisqa qilib aytganda:", text, flags=re.IGNORECASE)
+    text = re.sub(r"batafsil\s*:", "Batafsil:", text, flags=re.IGNORECASE)
     # Javob matnida manba qatori ko'rsatilmasin (manba alohida `sources` da mavjud).
     text = re.sub(r"^\s*manba\s*:\s*.*$", "", text, flags=re.IGNORECASE | re.MULTILINE)
     text = re.sub(r"\n{3,}", "\n\n", text).strip()
 
     if "Batafsil:" not in text:
         text = f"Batafsil: {text}"
-    if "Qisqa qilib aytganda:" not in text:
-        # Qisqa xulosani model bermagan bo'lsa, mavjud matndan ixcham yakun qo'shamiz.
-        short = text.replace("Batafsil:", "").strip()
-        # Band raqami prefiksini olib tashlaymiz: "23. ..." -> "..."
-        short = re.sub(r"^\s*\d+\s*[.)-]\s*", "", short)
-        short = short.split(".")[0].strip()
-        if len(short.split()) > 18:
-            short = " ".join(short.split()[:18]).strip() + "..."
-        if short:
-            text = f"{text}\nQisqa qilib aytganda: {short}."
-    return text
+
+    marker = "Qisqa qilib aytganda:"
+    if marker in text:
+        before, after = text.split(marker, 1)
+        detailed = before.replace("Batafsil:", "").strip()
+        short_raw = after.strip()
+    else:
+        detailed = text.replace("Batafsil:", "").strip()
+        short_raw = ""
+
+    # Qisqa xulosa doim 1 jumla va juda qisqa bo'lsin.
+    short_line = re.split(r"[\n\r]+", short_raw, maxsplit=1)[0].strip() if short_raw else ""
+    short_words = short_line.split()
+    if (not short_line) or len(short_words) < 3 or len(short_words) > 16:
+        short_line = _make_short_summary(detailed, max_words=12)
+    else:
+        short_line = _make_short_summary(short_line, max_words=12)
+
+    detailed = re.sub(r"\s+", " ", detailed).strip()
+    if not detailed:
+        detailed = "Kontekstda aniq javob topilmadi."
+    return f"Batafsil: {detailed}\nQisqa qilib aytganda: {short_line}"
 
 
 

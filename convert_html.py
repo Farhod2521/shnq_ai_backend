@@ -1,6 +1,7 @@
 import argparse
 import os
 import re
+import time
 
 from bs4 import BeautifulSoup
 
@@ -248,7 +249,6 @@ def _table_to_rows_and_markdown(table_elem):
     return parsed_rows, "\n".join(markdown_lines)
 
 
-@transaction.atomic
 def import_shnq_html(
     file_path,
     category_code="SHNQ",
@@ -257,11 +257,23 @@ def import_shnq_html(
     lex_url=None,
     reset=True,
     images_only=False,
+    pretranslate_tables=True,
+    progress_every=100,
+    verbose=True,
 ):
     ensure_normtable_i18n_columns()
 
     with open(file_path, "r", encoding="utf-8") as f:
         soup = BeautifulSoup(f.read(), "html.parser")
+    elements = list(soup.find_all(["div", "a", "table", "img"]))
+    total_elements = len(elements)
+    started_at = time.time()
+    if verbose:
+        print(
+            f"Import started. File={file_path} | elements={total_elements} | "
+            f"reset={reset} | images_only={images_only} | pretranslate_tables={pretranslate_tables}",
+            flush=True,
+        )
 
     inferred_code = extract_doc_code_from_html(soup)
     effective_doc_code = inferred_code or doc_code
@@ -328,7 +340,15 @@ def import_shnq_html(
     imported_images = 0
     seen_image_sources = set()
 
-    for elem in soup.find_all(["div", "a", "table", "img"]):
+    for idx, elem in enumerate(elements, start=1):
+        if verbose and progress_every > 0 and (idx == 1 or idx % progress_every == 0 or idx == total_elements):
+            elapsed = time.time() - started_at
+            print(
+                f"[{idx}/{total_elements}] clauses={imported_clauses} "
+                f"tables={imported_tables} images={imported_images} "
+                f"elapsed={elapsed:.1f}s",
+                flush=True,
+            )
         if elem.name == "a" and elem.get("id"):
             anchor = elem.get("id")
             if elem.find("img"):
@@ -466,7 +486,8 @@ def import_shnq_html(
                 markdown=markdown,
                 order=table_order,
             )
-            pretranslate_table_fields(last_table)
+            if pretranslate_tables:
+                pretranslate_table_fields(last_table)
             pending_anchor = None
             imported_tables += 1
 
@@ -498,6 +519,27 @@ def _parse_args():
         action="store_true",
         help="Faqat rasmlarni import qilish (Clause/NormTable o'zgarmaydi).",
     )
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=100,
+        help="Har nechta elementda progress chiqarish (0 = o'chiriladi).",
+    )
+    parser.add_argument(
+        "--quiet",
+        action="store_true",
+        help="Progress loglarni chiqarmaslik.",
+    )
+    parser.add_argument(
+        "--atomic",
+        action="store_true",
+        help="Importni bitta transaction ichida bajarish (yozuvlar oxirida commit bo'ladi).",
+    )
+    parser.add_argument(
+        "--skip-pretranslate",
+        action="store_true",
+        help="Import paytida jadval ru/en/ko tarjimalarini qilmaslik (tezroq).",
+    )
     return parser.parse_args()
 
 
@@ -506,15 +548,36 @@ if __name__ == "__main__":
     base_dir = os.path.dirname(os.path.abspath(__file__))
     html_path = args.file if os.path.isabs(args.file) else os.path.join(base_dir, args.file)
     ensure_runtime_tables()
-    result = import_shnq_html(
-        file_path=html_path,
-        category_code=args.category_code,
-        doc_code=args.doc_code,
-        title=args.title,
-        lex_url=args.lex_url,
-        reset=not args.no_reset,
-        images_only=args.images_only,
-    )
+    if args.atomic and not args.quiet:
+        print("Atomic mode: ON (DB yozuvlari import tugagach ko'rinadi).", flush=True)
+
+    if args.atomic:
+        with transaction.atomic():
+            result = import_shnq_html(
+                file_path=html_path,
+                category_code=args.category_code,
+                doc_code=args.doc_code,
+                title=args.title,
+                lex_url=args.lex_url,
+                reset=not args.no_reset,
+                images_only=args.images_only,
+                pretranslate_tables=not args.skip_pretranslate,
+                progress_every=args.progress_every,
+                verbose=not args.quiet,
+            )
+    else:
+        result = import_shnq_html(
+            file_path=html_path,
+            category_code=args.category_code,
+            doc_code=args.doc_code,
+            title=args.title,
+            lex_url=args.lex_url,
+            reset=not args.no_reset,
+            images_only=args.images_only,
+            pretranslate_tables=not args.skip_pretranslate,
+            progress_every=args.progress_every,
+            verbose=not args.quiet,
+        )
     print(
         "Import finished. "
         f"Clauses: {result['clauses']}, "
