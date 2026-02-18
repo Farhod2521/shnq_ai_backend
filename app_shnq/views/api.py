@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 
 from rest_framework import status
@@ -27,6 +28,7 @@ from .constants import (
     MIN_SCORE,
     RAG_FINAL_MAX_TOKENS,
     RAG_IMAGE_TOP_K,
+    RAG_TABLE_ROW_TOP_K,
     RAG_MULTILINGUAL_NATIVE_FIRST,
     RAG_MULTILINGUAL_TRANSLATE_FALLBACK,
     RAG_TRANSLATED_QUERY_SCORE_WEIGHT,
@@ -63,9 +65,11 @@ from .services import (
     _linked_image_embeddings_from_clause_refs,
     _needs_clarification,
     _pick_related_table_from_rag,
+    _pick_related_table_from_row_hits,
     _pick_fewshot_examples,
     _rewrite_query_if_needed,
     _search_image_embeddings,
+    _search_table_row_embeddings_global,
     _score_with_qdrant,
     _should_ask_document_clarification,
     _table_candidate_chapters,
@@ -74,6 +78,14 @@ from .services import (
 )
 
 logger = logging.getLogger(__name__)
+CLAUSE_LOOKUP_RE = re.compile(
+    r"(?:\b\d+\s*[-.]?\s*band(?:da|ni|ga|dan|ning|lar)?\b|\bband(?:da|ni|ga|dan|ning|lar)?\b|\bmodda\b)",
+    re.IGNORECASE,
+)
+
+
+def _is_explicit_clause_lookup(text: str) -> bool:
+    return bool(CLAUSE_LOOKUP_RE.search(text or ""))
 
 
 def _merge_scored_candidates(primary, secondary, secondary_weight=1.0):
@@ -112,10 +124,32 @@ def _merge_image_candidates(primary, secondary, secondary_weight=1.0):
     return combined
 
 
-def _build_retrieval_fallback_answer(top_pairs, image_pairs=None):
+def _merge_table_row_candidates(primary, secondary, secondary_weight=1.0):
+    merged = {}
+
+    for score, emb, semantic, keyword in primary:
+        merged[str(emb.row_id)] = (score, emb, semantic, keyword)
+
+    for score, emb, semantic, keyword in secondary:
+        weighted_score = score * secondary_weight
+        current = merged.get(str(emb.row_id))
+        candidate = (weighted_score, emb, semantic, keyword)
+        if current is None or weighted_score > current[0]:
+            merged[str(emb.row_id)] = candidate
+
+    combined = list(merged.values())
+    combined.sort(key=lambda x: x[0], reverse=True)
+    return combined
+
+
+def _build_retrieval_fallback_answer(top_pairs, image_pairs=None, table_row_pairs=None):
     if not top_pairs:
         if image_pairs:
             return "Mos rasm topildi. Rasm URL manbalar bo'limida berildi."
+        if table_row_pairs:
+            best_row_text = (table_row_pairs[0][1].search_text or "").strip()
+            if best_row_text:
+                return best_row_text
         return "Mos band topilmadi."
 
     _score, emb, _semantic, _keyword = top_pairs[0]
@@ -165,6 +199,28 @@ def _build_image_source(score, emb, semantic, keyword):
         "html_anchor": image.html_anchor,
         "image_url": image.image_url,
         "snippet": _image_text_for_context(image)[:280],
+        "score": round(score, 4),
+        "semantic_score": round(semantic, 4),
+        "keyword_score": round(keyword, 4),
+    }
+
+
+def _build_table_row_source(score, emb, semantic, keyword):
+    row = emb.row
+    table = row.table
+    chapter_title = table.section_title or (table.chapter.title if table.chapter else None)
+    snippet = (emb.search_text or "").strip()
+    if len(snippet) > 320:
+        snippet = snippet[:320].rsplit(" ", 1)[0].strip() + " ..."
+    return {
+        "type": "table_row",
+        "shnq_code": emb.shnq_code,
+        "chapter": chapter_title,
+        "table_number": table.table_number,
+        "title": table.title,
+        "html_anchor": table.html_anchor,
+        "row_index": emb.row_index,
+        "snippet": snippet,
         "score": round(score, 4),
         "semantic_score": round(semantic, 4),
         "keyword_score": round(keyword, 4),
@@ -506,7 +562,35 @@ class ChatAPIView(APIView):
                     secondary_weight=RAG_TRANSLATED_QUERY_SCORE_WEIGHT,
                 )
 
-        if requested_doc_code and not scored and not image_pairs:
+        table_row_pairs = []
+        explicit_clause_lookup = _is_explicit_clause_lookup(search_message)
+        if not explicit_clause_lookup:
+            table_row_pairs = _search_table_row_embeddings_global(
+                rewritten_primary,
+                requested_doc_code=requested_doc_code,
+                limit=max(1, RAG_TABLE_ROW_TOP_K),
+            )
+            if rewritten_secondary:
+                secondary_table_row_pairs = _search_table_row_embeddings_global(
+                    rewritten_secondary,
+                    requested_doc_code=requested_doc_code,
+                    limit=max(1, RAG_TABLE_ROW_TOP_K),
+                )
+                if secondary_table_row_pairs:
+                    table_row_pairs = _merge_table_row_candidates(
+                        table_row_pairs,
+                        secondary_table_row_pairs,
+                        secondary_weight=RAG_TRANSLATED_QUERY_SCORE_WEIGHT,
+                    )
+            # Agar clause qidiruvi aniq va kuchli chiqsa, table-row kontekstni qo'shmaymiz.
+            if table_row_pairs and scored:
+                top_clause_score = scored[0][0]
+                top_clause_keyword = scored[0][3]
+                top_table_row_score = table_row_pairs[0][0]
+                if top_clause_keyword >= 0.2 and (top_table_row_score + 0.03) < top_clause_score:
+                    table_row_pairs = []
+
+        if requested_doc_code and not scored and not image_pairs and not table_row_pairs:
             return Response(
                 {
                     "answer": f"{requested_doc_code} bo'yicha mos band topilmadi.",
@@ -545,7 +629,7 @@ class ChatAPIView(APIView):
 
         allow_relaxed = _can_answer_with_relaxed_threshold(scored, best_score)
         if best_score < STRICT_MIN_SCORE:
-            if allow_relaxed or image_pairs:
+            if allow_relaxed or image_pairs or table_row_pairs:
                 pass
             else:
                 clarification = _needs_clarification(search_message)
@@ -589,6 +673,8 @@ class ChatAPIView(APIView):
         top = [item for _, item, *_rest in top_pairs]
         image_limit = max(1, RAG_IMAGE_TOP_K)
         image_top_pairs = image_pairs[:image_limit]
+        table_row_limit = max(1, RAG_TABLE_ROW_TOP_K)
+        table_row_top_pairs = table_row_pairs[:table_row_limit]
         linked_image_pairs = _linked_image_embeddings_from_clause_refs(
             top_pairs,
             original_message,
@@ -598,7 +684,7 @@ class ChatAPIView(APIView):
             image_limit = max(image_limit, len(linked_image_pairs))
             image_top_pairs = _merge_image_candidates(image_top_pairs, linked_image_pairs)[:image_limit]
 
-        if not top and not image_top_pairs:
+        if not top and not image_top_pairs and not table_row_top_pairs:
             clarification = _needs_clarification(search_message)
             if clarification:
                 code, question = clarification
@@ -624,6 +710,7 @@ class ChatAPIView(APIView):
             response_language=message_language,
             fewshot_examples=fewshot_examples,
             image_sources=[item for _score, item, _semantic, _keyword in image_top_pairs],
+            table_row_sources=[item for _score, item, _semantic, _keyword in table_row_top_pairs],
         )
         try:
             t_rag = time.perf_counter()
@@ -636,12 +723,18 @@ class ChatAPIView(APIView):
             timings["rag_generate"] = round((time.perf_counter() - t_rag) * 1000, 2)
         except Exception as exc:
             logger.warning("rag_generate_failed: %s", exc)
-            answer = _build_retrieval_fallback_answer(top_pairs, image_pairs=image_top_pairs)
+            answer = _build_retrieval_fallback_answer(
+                top_pairs,
+                image_pairs=image_top_pairs,
+                table_row_pairs=table_row_top_pairs,
+            )
         if not answer:
             if top:
                 answer = top[0].clause.text
             elif image_top_pairs:
                 answer = "Mos rasm topildi. Rasm URL manbalar bo'limida berildi."
+            elif table_row_top_pairs:
+                answer = (table_row_top_pairs[0][1].search_text or "").strip() or "Mos jadval satri topildi."
             else:
                 answer = "Mos band topilmadi."
         answer = _cleanup_answer_format(answer)
@@ -650,8 +743,12 @@ class ChatAPIView(APIView):
             sources.append(_build_clause_source(score, emb, semantic, keyword))
         for score, emb, semantic, keyword in image_top_pairs:
             sources.append(_build_image_source(score, emb, semantic, keyword))
+        for score, emb, semantic, keyword in table_row_top_pairs:
+            sources.append(_build_table_row_source(score, emb, semantic, keyword))
 
         related_table = _pick_related_table_from_rag(search_message, top_pairs)
+        if not related_table:
+            related_table = _pick_related_table_from_row_hits(table_row_top_pairs)
         table_html = None
         if related_table:
             table_html, table_md = get_pretranslated_table_content(related_table, message_language)
@@ -711,6 +808,7 @@ class ChatAPIView(APIView):
                     "translated_query_score_weight": RAG_TRANSLATED_QUERY_SCORE_WEIGHT,
                     "fewshot_examples_used": len(fewshot_examples),
                     "image_sources": len(image_top_pairs),
+                    "table_row_sources": len(table_row_top_pairs),
                     "table_prelocalized": (
                         has_pretranslated_table_content(related_table, message_language) if related_table else False
                     ),

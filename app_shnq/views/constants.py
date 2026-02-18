@@ -26,6 +26,7 @@ from ..models import (
     NormImage,
     NormTable,
     QuestionAnswer,
+    TableRowEmbedding,
     ensure_runtime_tables,
 )
 from ..qdrant_store import count_points as qdrant_count_points, search as qdrant_search
@@ -46,6 +47,8 @@ RAG_FINAL_MAX_TOKENS = int(os.getenv("RAG_FINAL_MAX_TOKENS", "220" if RAG_FAST_M
 RAG_REWRITE_MAX_TOKENS = int(os.getenv("RAG_REWRITE_MAX_TOKENS", "80"))
 RAG_RERANK_MAX_TOKENS = int(os.getenv("RAG_RERANK_MAX_TOKENS", "40"))
 RAG_TABLE_QA_MAX_TOKENS = int(os.getenv("RAG_TABLE_QA_MAX_TOKENS", "180" if RAG_FAST_MODE else "280"))
+RAG_TABLE_ROW_TOP_K = int(os.getenv("RAG_TABLE_ROW_TOP_K", "5"))
+RAG_TABLE_ROW_MIN_SCORE = float(os.getenv("RAG_TABLE_ROW_MIN_SCORE", "0.16"))
 RAG_AMBIGUITY_SCORE_GAP = float(os.getenv("RAG_AMBIGUITY_SCORE_GAP", "0.03"))
 RAG_AMBIGUITY_MAX_DOCS = int(os.getenv("RAG_AMBIGUITY_MAX_DOCS", "6"))
 RAG_LOW_CONFIDENCE_FLOOR = float(os.getenv("RAG_LOW_CONFIDENCE_FLOOR", "0.12"))

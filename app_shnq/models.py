@@ -153,6 +153,27 @@ class NormTableCell(models.Model):
         return f"{self.row} col {self.col_index}"
 
 
+class TableRowEmbedding(models.Model):
+    """
+    Jadval satri bo'yicha embedding metadata va vector
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    row = models.OneToOneField(NormTableRow, on_delete=models.CASCADE, related_name="embedding")
+
+    embedding_model = models.CharField(max_length=100)
+    vector = models.JSONField()
+    token_count = models.PositiveIntegerField(default=0)
+
+    shnq_code = models.CharField(max_length=100)
+    chapter_title = models.CharField(max_length=500, blank=True, null=True)
+    table_number = models.CharField(max_length=50, db_index=True)
+    table_title = models.CharField(max_length=500, blank=True, null=True)
+    row_index = models.PositiveIntegerField(default=0)
+    search_text = models.TextField(blank=True, default="")
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
 class NormImage(models.Model):
     """
     Hujjat ichidagi rasm (img src)
@@ -215,7 +236,7 @@ def ensure_runtime_tables():
     Migrations ishlatilmagan loyihalarda yangi jadvallarni runtime'da yaratish uchun.
     """
     existing_tables = set(connection.introspection.table_names())
-    models_to_ensure = [NormImage, ImageEmbedding]
+    models_to_ensure = [NormImage, ImageEmbedding, TableRowEmbedding]
 
     with connection.schema_editor() as schema_editor:
         for model_cls in models_to_ensure:

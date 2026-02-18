@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 from .constants import *
+from ..table_embeddings import upsert_table_row_embeddings_for_table
 
 # NOTE:
 # `from .constants import *` does not import underscored names, so keep
@@ -11,6 +12,9 @@ _EMBED_CACHE_MODEL = None
 _EMBED_CACHE_DATA = None
 _IMAGE_EMBED_CACHE_MODEL = None
 _IMAGE_EMBED_CACHE_DATA = None
+_TABLE_ROW_EMBED_CACHE = {}
+_TABLE_ROW_GLOBAL_EMBED_CACHE_MODEL = None
+_TABLE_ROW_GLOBAL_EMBED_CACHE_DATA = None
 
 IMAGE_SOURCE_MARKER = "[image]"
 IMAGE_URL_RE = re.compile(r"\burl:\s*(https?://\S+)", re.IGNORECASE)
@@ -618,10 +622,227 @@ def _table_local_numeric_answer(message: str, table: NormTable):
     )
 
 
+def _table_row_cache_key(table: NormTable):
+    return f"{EMBEDDING_MODEL}:{table.id}"
+
+
+def _clear_table_row_cache(table: NormTable):
+    global _TABLE_ROW_GLOBAL_EMBED_CACHE_MODEL, _TABLE_ROW_GLOBAL_EMBED_CACHE_DATA
+    _TABLE_ROW_EMBED_CACHE.pop(_table_row_cache_key(table), None)
+    _TABLE_ROW_GLOBAL_EMBED_CACHE_MODEL = None
+    _TABLE_ROW_GLOBAL_EMBED_CACHE_DATA = None
+
+
+def _prepare_table_row_runtime_fields(embeddings):
+    for emb in embeddings:
+        emb._norm_text = _normalize_text(emb.search_text or "")
+    return embeddings
+
+
+def _ensure_table_row_embeddings(table: NormTable):
+    ensure_runtime_tables()
+    total_rows = table.rows.count()
+    if total_rows <= 0:
+        return
+    existing_qs = TableRowEmbedding.objects.filter(row__table=table, embedding_model=EMBEDDING_MODEL)
+    existing_count = existing_qs.count()
+    has_empty_text = existing_qs.filter(search_text="").exists()
+    if existing_count >= total_rows and not has_empty_text:
+        return
+    try:
+        result = upsert_table_row_embeddings_for_table(
+            table,
+            embedding_model=EMBEDDING_MODEL,
+            force_update=False,
+        )
+    except Exception:
+        return
+    if (result.get("created", 0) + result.get("updated", 0)) > 0:
+        _clear_table_row_cache(table)
+
+
+def _get_table_row_embeddings(table: NormTable):
+    cache_key = _table_row_cache_key(table)
+    if EMBED_CACHE_ENABLED and cache_key in _TABLE_ROW_EMBED_CACHE:
+        return _TABLE_ROW_EMBED_CACHE[cache_key]
+
+    data = list(
+        TableRowEmbedding.objects.select_related(
+            "row",
+            "row__table",
+            "row__table__document",
+            "row__table__chapter",
+        ).filter(
+            row__table=table,
+            embedding_model=EMBEDDING_MODEL,
+        ).order_by("row__row_index")
+    )
+    data = _prepare_table_row_runtime_fields(data)
+    if EMBED_CACHE_ENABLED:
+        _TABLE_ROW_EMBED_CACHE[cache_key] = data
+    return data
+
+
+def _table_row_keyword_score(terms, emb: TableRowEmbedding) -> float:
+    if not terms:
+        return 0.0
+    haystack = getattr(emb, "_norm_text", None) or _normalize_text(emb.search_text or "")
+    if not haystack:
+        return 0.0
+    hits = sum(1 for term in terms if term in haystack)
+    return hits / max(len(terms), 1)
+
+
+def _search_table_row_embeddings(message: str, table: NormTable):
+    try:
+        _ensure_table_row_embeddings(table)
+        embeddings = _get_table_row_embeddings(table)
+    except Exception:
+        return []
+    if not embeddings:
+        return []
+
+    query_terms = _extract_query_terms(message)
+    query_vec = None
+    try:
+        query_vec = embed_text(message, model=EMBEDDING_MODEL)
+    except Exception:
+        query_vec = None
+
+    scored = []
+    for emb in embeddings:
+        semantic = cosine_similarity(query_vec, emb.vector) if (query_vec and emb.vector) else 0.0
+        keyword = _table_row_keyword_score(query_terms, emb)
+        score = semantic + (KEYWORD_WEIGHT * keyword)
+        if score < RAG_TABLE_ROW_MIN_SCORE and keyword <= 0:
+            continue
+        scored.append((score, emb, semantic, keyword))
+
+    if not scored:
+        for emb in embeddings:
+            keyword = _table_row_keyword_score(query_terms, emb)
+            if keyword <= 0:
+                continue
+            scored.append((KEYWORD_WEIGHT * keyword, emb, 0.0, keyword))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return scored[: max(1, RAG_TABLE_ROW_TOP_K)]
+
+
+def _table_markdown_preview(markdown: str, max_lines: int = 12):
+    lines = (markdown or "").splitlines()
+    if len(lines) <= max_lines:
+        return markdown
+    return "\n".join(lines[:max_lines]) + "\n..."
+
+
+def _build_table_rows_context(row_hits):
+    rows = []
+    for idx, (score, emb, semantic, keyword) in enumerate(row_hits, 1):
+        row_text = (emb.search_text or "").strip()
+        if len(row_text) > 900:
+            row_text = row_text[:900].rsplit(" ", 1)[0].strip() + " ..."
+        rows.append(
+            f"{idx}) satr {emb.row_index} | score={score:.4f} | semantic={semantic:.4f} | keyword={keyword:.4f}\n"
+            f"{row_text}"
+        )
+    return "\n\n".join(rows)
+
+
+def _get_table_row_embeddings_for_query():
+    global _TABLE_ROW_GLOBAL_EMBED_CACHE_MODEL, _TABLE_ROW_GLOBAL_EMBED_CACHE_DATA
+
+    if (
+        EMBED_CACHE_ENABLED
+        and _TABLE_ROW_GLOBAL_EMBED_CACHE_MODEL == EMBEDDING_MODEL
+        and _TABLE_ROW_GLOBAL_EMBED_CACHE_DATA is not None
+    ):
+        return _TABLE_ROW_GLOBAL_EMBED_CACHE_DATA
+
+    ensure_runtime_tables()
+    data = list(
+        TableRowEmbedding.objects.select_related(
+            "row",
+            "row__table",
+            "row__table__document",
+            "row__table__chapter",
+        ).filter(embedding_model=EMBEDDING_MODEL)
+    )
+    data = _prepare_table_row_runtime_fields(data)
+    if EMBED_CACHE_ENABLED:
+        _TABLE_ROW_GLOBAL_EMBED_CACHE_MODEL = EMBEDDING_MODEL
+        _TABLE_ROW_GLOBAL_EMBED_CACHE_DATA = data
+    return data
+
+
+def _filter_table_row_embeddings_by_doc_code(embeddings, doc_code: str):
+    target = _normalize_doc_code(doc_code)
+    filtered = []
+    for emb in embeddings:
+        current = _normalize_doc_code(emb.shnq_code or "")
+        if not current:
+            continue
+        if current == target or current.startswith(target):
+            filtered.append(emb)
+    return filtered
+
+
+def _search_table_row_embeddings_global(message: str, requested_doc_code: str | None = None, limit: int | None = None):
+    query_terms = _extract_query_terms(message)
+    query_vec = None
+    try:
+        query_vec = embed_text(message, model=EMBEDDING_MODEL)
+    except Exception:
+        query_vec = None
+
+    embeddings = _get_table_row_embeddings_for_query()
+    if requested_doc_code:
+        embeddings = _filter_table_row_embeddings_by_doc_code(embeddings, requested_doc_code)
+    if not embeddings:
+        return []
+
+    scored = []
+    for emb in embeddings:
+        semantic = cosine_similarity(query_vec, emb.vector) if (query_vec and emb.vector) else 0.0
+        keyword = _table_row_keyword_score(query_terms, emb)
+        score = semantic + (KEYWORD_WEIGHT * keyword)
+        if score < RAG_TABLE_ROW_MIN_SCORE and keyword <= 0:
+            continue
+        scored.append((score, emb, semantic, keyword))
+
+    if not scored:
+        return []
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    max_items = limit or RAG_TABLE_ROW_TOP_K
+    return scored[: max(1, max_items)]
+
+
+def _pick_related_table_from_row_hits(row_pairs):
+    if not row_pairs:
+        return None
+    try:
+        return row_pairs[0][1].row.table
+    except Exception:
+        return None
+
+
 def _build_table_qa_answer(message: str, table: NormTable) -> str:
     local_answer = _table_local_numeric_answer(message, table)
     if local_answer:
         return local_answer
+
+    row_hits = _search_table_row_embeddings(message, table)
+    rows_context = _build_table_rows_context(row_hits)
+    if rows_context:
+        context_block = (
+            "Jadvaldan embedding orqali topilgan eng mos satrlar:\n"
+            f"{rows_context}\n\n"
+            "Jadval preview (markdown):\n"
+            f"{_table_markdown_preview(table.markdown)}\n\n"
+        )
+    else:
+        context_block = f"Jadval (markdown):\n{table.markdown}\n\n"
 
     system = (
         "Siz SHNQ jadvali bo'yicha yordamchisiz. Faqat berilgan jadval matniga tayangan holda javob bering. "
@@ -635,8 +856,7 @@ def _build_table_qa_answer(message: str, table: NormTable) -> str:
         f"Hujjat: {table.document.code}\n"
         f"Bo'lim: {table.section_title or (table.chapter.title if table.chapter else '-')}\n"
         f"Jadval/ilova identifikatori: {table_ref}\n"
-        "Jadval (markdown):\n"
-        f"{table.markdown}\n\n"
+        f"{context_block}"
         "Javobni qisqa va aniq yozing, kerak bo'lsa qaysi satr/ustundan olganingizni ayting."
     )
     try:
@@ -1370,7 +1590,14 @@ def _pick_fewshot_examples(question: str, limit: int = 3):
     return [item for _, item in ranked[: max(limit, 1)]]
 
 
-def _build_rag_prompt(question, sources, response_language="uz", fewshot_examples=None, image_sources=None):
+def _build_rag_prompt(
+    question,
+    sources,
+    response_language="uz",
+    fewshot_examples=None,
+    image_sources=None,
+    table_row_sources=None,
+):
     context_chunks = []
     for idx, emb in enumerate(sources, 1):
         clause = emb.clause
@@ -1396,6 +1623,26 @@ def _build_rag_prompt(question, sources, response_language="uz", fewshot_example
                 f"Ilova: {image_emb.appendix_number or '-'}",
                 f"Rasm URL: {image.image_url}",
                 f"Matn: {_image_text_for_context(image)}",
+            ]
+            context_chunks.append("\n".join(lines))
+
+    if table_row_sources:
+        base_idx = len(context_chunks)
+        for offset, row_emb in enumerate(table_row_sources, 1):
+            row = row_emb.row
+            table = row.table
+            chapter_title = table.section_title or (table.chapter.title if table.chapter else "Nomalum bob")
+            row_text = (row_emb.search_text or "").strip()
+            if len(row_text) > 900:
+                row_text = row_text[:900].rsplit(" ", 1)[0].strip() + " ..."
+            header = f"Manba {base_idx + offset} (Jadval satri)"
+            lines = [
+                header,
+                f"Hujjat: {row_emb.shnq_code}",
+                f"Bo'lim: {chapter_title}",
+                f"Jadval: {table.table_number}",
+                f"Satr: {row_emb.row_index}",
+                f"Matn: {row_text}",
             ]
             context_chunks.append("\n".join(lines))
 

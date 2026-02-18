@@ -12,6 +12,7 @@ from .models import (
     NormTableCell,
     NormTableRow,
     QuestionAnswer,
+    TableRowEmbedding,
 )
 
 
@@ -62,6 +63,14 @@ class NormImageAdmin(admin.ModelAdmin):
 class ImageEmbeddingAdmin(admin.ModelAdmin):
     list_display = ("image", "embedding_model", "token_count", "shnq_code")
     search_fields = ("image__document__code", "image__title", "image_url", "shnq_code")
+
+
+@admin.register(TableRowEmbedding)
+class TableRowEmbeddingAdmin(admin.ModelAdmin):
+    list_display = ("row", "embedding_model", "row_index", "table_number", "shnq_code", "token_count")
+    list_filter = ("shnq_code", "table_number")
+    search_fields = ("shnq_code", "table_number", "table_title", "chapter_title", "search_text")
+    ordering = ("shnq_code", "table_number", "row_index")
 
 
 @admin.register(QuestionAnswer)
